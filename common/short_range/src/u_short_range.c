@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,13 +41,18 @@
 #include "u_error_common.h"
 
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"
 #include "u_port_gpio.h"
 #include "u_port_uart.h"
 
 #include "u_at_client.h"
+
+#include "u_linked_list.h"
+
+#include "u_geofence.h"
+#include "u_geofence_shared.h"
 
 #include "u_short_range_module_type.h"
 #include "u_short_range_pbuf.h"
@@ -66,6 +71,13 @@
  * -------------------------------------------------------------- */
 
 #define U_SHORT_RANGE_BT_ADDRESS_SIZE 14
+
+#ifndef U_SHORT_RANGE_AT_CLIENT_CLOSE_DELAY_MS
+/** Delay to allow the AT client to process enqueued asynchronous
+ * events (URCs) before it is removed.
+ */
+# define U_SHORT_RANGE_AT_CLIENT_CLOSE_DELAY_MS 1000
+#endif
 
 /* ----------------------------------------------------------------
  * TYPES
@@ -213,8 +225,7 @@ static int32_t uShortRangeAdd(uShortRangeModuleType_t moduleType,
         // Allocate memory for the instance
         pInstance = (uShortRangePrivateInstance_t *) pUPortMalloc(sizeof(uShortRangePrivateInstance_t));
         if (pInstance != NULL) {
-            int32_t streamHandle;
-            uAtClientStream_t streamType;
+            uAtClientStreamHandle_t stream;
             // Fill the values in
             memset(pInstance, 0, sizeof(*pInstance));
 
@@ -231,9 +242,9 @@ static int32_t uShortRangeAdd(uShortRangeModuleType_t moduleType,
             pInstance->sockNextLocalPort = -1;
             pInstance->uartHandle = uartHandle;
 
-            streamHandle = uAtClientStreamGet(atHandle, &streamType);
-            pInstance->streamHandle = streamHandle;
-            pInstance->streamType = streamType;
+            uAtClientStreamGetExt(atHandle, &stream);
+            pInstance->streamHandle = stream.handle.int32;
+            pInstance->streamType = stream.type;
 
             pInstance->pModule = pModule;
             pInstance->pNext = NULL;
@@ -319,7 +330,6 @@ static int32_t parseBdAddr(const char *pStr, uint8_t *pDstAddr)
     return (int32_t)U_ERROR_COMMON_SUCCESS;
 }
 
-
 static int32_t parseIpv4Addr(char *pStr, uint8_t *pDstIp)
 {
     // Parse string: "192.168.0.1"
@@ -379,7 +389,6 @@ static int32_t parseUint16(int32_t value, uint16_t *pDst)
     }
     return (int32_t)U_ERROR_COMMON_UNKNOWN;
 }
-
 
 //+UUDPC:<peer_handle>,<type>,<profile>,<address>,<frame_size>
 //lint -esym(818, pParameter) Suppress pParameter could be const, need to
@@ -759,6 +768,7 @@ int32_t uShortRangeOpenUart(uShortRangeModuleType_t moduleType,
     int32_t uartHandle = (int32_t)U_ERROR_COMMON_NOT_INITIALISED;
     int32_t edmStreamHandle = (int32_t)U_ERROR_COMMON_NOT_INITIALISED;
     uAtClientHandle_t atClientHandle = NULL;
+    uAtClientStreamHandle_t stream;
     int32_t handleOrErrorCode = (int32_t)U_ERROR_COMMON_INVALID_PARAMETER;
 
     if (gUShortRangePrivateMutex == NULL) {
@@ -773,6 +783,10 @@ int32_t uShortRangeOpenUart(uShortRangeModuleType_t moduleType,
     if ((moduleType <= U_SHORT_RANGE_MODULE_TYPE_INTERNAL) ||
         (pUartConfig == NULL)) {
         return handleOrErrorCode;
+    }
+
+    if (pUartConfig->pPrefix != NULL) {
+        uPortUartPrefix(pUartConfig->pPrefix);
     }
 
     handleOrErrorCode = uPortUartOpen(pUartConfig->uartPort,
@@ -807,11 +821,11 @@ int32_t uShortRangeOpenUart(uShortRangeModuleType_t moduleType,
 
     //lint -e(838) Suppress previously assigned value has not been used
     edmStreamHandle = handleOrErrorCode;
+    stream.handle.int32 = edmStreamHandle;
+    stream.type = U_AT_CLIENT_STREAM_TYPE_EDM;
     //lint -e(838) Suppress previously assigned value has not been used
-    atClientHandle = uAtClientAdd(edmStreamHandle,
-                                  U_AT_CLIENT_STREAM_TYPE_EDM,
-                                  NULL,
-                                  U_SHORT_RANGE_AT_BUFFER_LENGTH_BYTES);
+    atClientHandle = uAtClientAddExt(&stream, NULL,
+                                     U_SHORT_RANGE_AT_BUFFER_LENGTH_BYTES);
 
     if (atClientHandle == NULL) {
         uShortRangeEdmStreamClose(edmStreamHandle);
@@ -840,6 +854,20 @@ int32_t uShortRangeOpenUart(uShortRangeModuleType_t moduleType,
 
     uShortRangeEdmStreamSetAtHandle(edmStreamHandle, atClientHandle);
 
+    if (moduleType == U_SHORT_RANGE_MODULE_TYPE_ANY) {
+        moduleType = uShortRangeDetectModule(*pDevHandle);
+        uShortRangePrivateInstance_t *pInstance;
+        pInstance = pUShortRangePrivateGetInstance(*pDevHandle);
+        if (pInstance != NULL) {
+            pInstance->pModule = &gUShortRangePrivateModuleList[moduleType - 1];
+            uAtClientTimeoutSet(atClientHandle, pInstance->pModule->atTimeoutSeconds * 1000);
+            uAtClientDelaySet(atClientHandle, pInstance->pModule->commandDelayMs);
+            uPortLog("U_SHORT_RANGE: Module %d identified and set sucessfully\n",
+                     pInstance->pModule->moduleType);
+        } else {
+            return (int32_t)U_SHORT_RANGE_ERROR_INIT_INTERNAL;
+        }
+    }
     if (restart) {
         if (restartModuleAndEnterEDM(*pDevHandle) != (int32_t) U_ERROR_COMMON_SUCCESS) {
             uShortRangeClose(*pDevHandle);
@@ -879,8 +907,15 @@ void uShortRangeClose(uDeviceHandle_t devHandle)
         uAtClientIgnoreAsync(pInstance->atHandle);
         uShortRangeEdmStreamClose(pInstance->streamHandle);
         uShortRangeEdmStreamDeinit();
+        // URCs may have landed during the process of closing-up
+        // the AT interface to the module which are still queued
+        // and being processed by the AT handler; let them
+        // land before we pull it out from under them
+        uPortTaskBlock(U_SHORT_RANGE_AT_CLIENT_CLOSE_DELAY_MS);
         uAtClientRemoveUrcHandler(pInstance->atHandle, "+STARTUP");
         uAtClientRemove(pInstance->atHandle);
+        // Unlink any geofences and free the fence context
+        uGeofenceContextFree((uGeofenceContext_t **) &pInstance->pFenceContext);
         uPortUartClose(pInstance->uartHandle);
         removeShortRangeInstance(pInstance);
         uDeviceDestroyInstance(U_DEVICE_INSTANCE(devHandle));
@@ -1039,6 +1074,37 @@ const uShortRangeModuleInfo_t *uShortRangeGetModuleInfo(int32_t moduleType)
         }
     }
     return NULL;
+}
+
+int32_t uShortRangeGetFirmwareVersionStr(uDeviceHandle_t devHandle,
+                                         char *pStr, size_t size)
+{
+    uAtClientHandle_t atHandle;
+    uShortRangePrivateInstance_t *pInstance;
+    int32_t readBytes;
+    int32_t err = (int32_t)U_ERROR_COMMON_INVALID_PARAMETER;
+
+    if (gUShortRangePrivateMutex == NULL) {
+        return (int32_t) U_ERROR_COMMON_NOT_INITIALISED;
+    }
+
+    pInstance = pUShortRangePrivateGetInstance(devHandle);
+
+    if ((pInstance != NULL) && (pStr != NULL) && (size > 0)) {
+        atHandle = pInstance->atHandle;
+        uAtClientLock(atHandle);
+        uAtClientCommandStart(atHandle, "AT+CGMR");
+        uAtClientCommandStop(atHandle);
+        uAtClientResponseStart(atHandle, NULL);
+        readBytes = uAtClientReadString(atHandle, pStr, size, false);
+        uAtClientResponseStop(atHandle);
+        err = uAtClientUnlock(atHandle);
+        if ((readBytes >= 0) && (err == (int32_t)U_ERROR_COMMON_SUCCESS)) {
+            err = readBytes;
+        }
+    }
+
+    return err;
 }
 
 int32_t uShortRangeGetSerialNumber(uDeviceHandle_t devHandle, char *pSerialNumber)

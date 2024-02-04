@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,23 +18,34 @@
  * @brief Implementation of the port I2C API for the Zephyr platform.
  */
 
+#include <version.h>
+
+#if KERNEL_VERSION_NUMBER >= ZEPHYR_VERSION(3,1,0)
+#include <zephyr/types.h>
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/i2c.h>
+#else
 #include <zephyr/types.h>
 #include <kernel.h>
-#include <drivers/i2c.h>
-
 #include <device.h>
+#include <drivers/i2c.h>
+#endif
+
 #include <soc.h>
 
 #include "stddef.h"
 #include "stdint.h"
 #include "stdbool.h"
 
+#include "u_compiler.h" // U_ATOMIC_XXX() macros
+
 #include "u_error_common.h"
 
 #include "u_port.h"
 #include "u_port_os.h"
+#include "u_cfg_os_platform_specific.h"
 #include "u_port_i2c.h"
-#include "version.h"
 
 /* ----------------------------------------------------------------
  * COMPILE-TIME MACROS
@@ -91,6 +102,10 @@ static int32_t gClockHertzToIndex[] = {-1,
                                        5000000   /* 5: I2C_SPEED_ULTRA */
                                       };
 
+/** Variable to keep track of the number of I2C interfaces open.
+ */
+static volatile int32_t gResourceAllocCount = 0;
+
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
  * -------------------------------------------------------------- */
@@ -133,20 +148,22 @@ static int32_t openI2c(int32_t i2c, int32_t pinSda, int32_t pinSdc,
             (pinSda < 0) && (pinSdc < 0)) {
             handleOrErrorCode = (int32_t) U_ERROR_COMMON_PLATFORM;
             switch (i2c) {
+#ifdef CONFIG_I2C
                 case 0:
-#if KERNEL_VERSION_MAJOR < 3
+# if KERNEL_VERSION_MAJOR < 3
                     pDevice = device_get_binding("I2C_0");
-#else
-                    pDevice = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(i2c0));
-#endif
+# else
+                    pDevice = U_DEVICE_DT_GET_OR_NULL(i2c0);
+# endif
                     break;
                 case 1:
-#if KERNEL_VERSION_MAJOR < 3
+# if KERNEL_VERSION_MAJOR < 3
                     pDevice = device_get_binding("I2C_1");
-#else
-                    pDevice = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(i2c1));
-#endif
+# else
+                    pDevice = U_DEVICE_DT_GET_OR_NULL(i2c1);
+# endif
                     break;
+#endif
                 default:
                     break;
             }
@@ -159,6 +176,7 @@ static int32_t openI2c(int32_t i2c, int32_t pinSda, int32_t pinSdc,
                 // to flag that it is in use
                 gI2cData[i2c].pDevice = pDevice;
                 gI2cData[i2c].adopted = adopt;
+                U_ATOMIC_INCREMENT(&gResourceAllocCount);
                 // Return the I2C HW block number as the handle
                 handleOrErrorCode = i2c;
             }
@@ -228,6 +246,7 @@ void uPortI2cClose(int32_t handle)
         // Just set the device data structure to NULL to indicate that the device
         // is no longer in use
         gI2cData[handle].pDevice = NULL;
+        U_ATOMIC_DECREMENT(&gResourceAllocCount);
 
         U_PORT_MUTEX_UNLOCK(gMutex);
     }
@@ -251,9 +270,8 @@ int32_t uPortI2cCloseRecoverBus(int32_t handle)
             if (!gI2cData[handle].adopted) {
                 errorCode = (int32_t) U_ERROR_COMMON_PLATFORM;
                 pDevice = gI2cData[handle].pDevice;
-                // Mark the device as closed; adopt is not a factor
-                // here, we've been asked to fiddle
                 gI2cData[handle].pDevice = NULL;
+                U_ATOMIC_DECREMENT(&gResourceAllocCount);
                 x = i2c_recover_bus(pDevice);
                 if (x == -ENOSYS) {
                     errorCode = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
@@ -393,7 +411,7 @@ int32_t uPortI2cControllerSendReceive(int32_t handle, uint16_t address,
                 }
                 x++;
             }
-            if (i2c_transfer(pDevice, message, x, address) == 0) {
+            if (i2c_transfer(pDevice, message, (uint8_t) x, address) == 0) {
                 errorCodeOrLength = (int32_t) bytesToReceive;
             }
         }
@@ -441,6 +459,12 @@ int32_t uPortI2cControllerSend(int32_t handle, uint16_t address,
     }
 
     return errorCode;
+}
+
+// Get the number of I2C interfaces currently open.
+int32_t uPortI2cResourceAllocCount()
+{
+    return U_ATOMIC_GET(&gResourceAllocCount);
 }
 
 // End of file

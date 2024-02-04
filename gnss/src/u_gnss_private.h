@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@
 
 #include "u_device.h"
 #include "u_ringbuffer.h"
+#include "u_gnss_info.h" // For uGnssVersionType_t
 
 /** @file
  * @brief This header file defines types, functions and inclusions that
@@ -100,9 +101,17 @@ extern "C" {
  */
 #define U_GNSS_POS_TASK_FLAG_CONTINUOUS 0x04
 
-/** The value that constitues "no data" on SPI.
+/** The value that constitutes "no data" on SPI.
  */
 #define U_GNSS_PRIVATE_SPI_FILL 0xFF
+
+#ifndef U_GNSS_CFG_LAYERS_SET
+/** The layers to use when using CFG-VAL to set a configuration
+ * value: both RAM and BBRAM if on/off power saving might be used
+ * since RAM is erased in the power-off state.
+ */
+# define U_GNSS_CFG_LAYERS_SET (U_GNSS_CFG_VAL_LAYER_RAM | U_GNSS_CFG_VAL_LAYER_BBRAM)
+#endif
 
 /* ----------------------------------------------------------------
  * TYPES
@@ -124,11 +133,7 @@ typedef enum {
  * Note: order is important since this is statically initialised.
  */
 typedef struct {
-//lint -esym(768, uGnssPrivateModule_t::moduleType) Suppress not referenced,
-// this is for the future.
     uGnssModuleType_t moduleType; /**< the module type. */
-//lint -esym(768, uGnssPrivateModule_t::featuresBitmap) Suppress not referenced,
-// this is for the future.
     uint32_t featuresBitmap; /**< a bit-map of the uGnssPrivateFeature_t
                                   characteristics of this module. */
 } uGnssPrivateModule_t;
@@ -172,7 +177,7 @@ typedef struct uGnssPrivateMsgReader_t {
     int32_t handle;
     uGnssPrivateMessageId_t privateMessageId;
     void *pCallback; /**< stored as a void * to avoid having to bring
-                          all the types of uGnssTransparentReceiveCallback_t
+                          all the types of uGnssMsgReceiveCallback_t
                           into everything. */
     void *pCallbackParam;
     struct uGnssPrivateMsgReader_t *pNext;
@@ -212,6 +217,16 @@ typedef struct {
     int32_t messageRate;         /**< set to -1 of nothing to restore. */
 } uGnssPrivateStreamedPosition_t;
 
+/** Parameters for AssistNow.
+ */
+typedef struct {
+    bool (*pProgressCallback)(uDeviceHandle_t, int32_t, size_t, size_t, void *);
+    void *pProgressCallbackParam;
+    volatile bool transferInProgress;
+    size_t blocksTotal;
+    int32_t errorCode;
+} uGnssPrivateMga_t;
+
 /** Definition of a GNSS instance.
  * Note: a pointer to this structure is passed to the asynchronous
  * "get position" function (posGetTask()) which does NOT lock the
@@ -238,6 +253,7 @@ typedef struct uGnssPrivateInstance_t {
     int32_t timeoutMs; /**< the timeout for responses from the GNSS chip in milliseconds. */
     int32_t spiFillThreshold; /**< the number of 0xFF fill bytes which constitute "no data" on SPI. */
     bool printUbxMessages; /**< whether debug printing of UBX messages is on or off. */
+    int32_t retriesOnNoResponse; /**< number of times to retry message transmission if there is no response. */
     int32_t pinGnssEnablePower; /**< the pin of the MCU that enables power to the GNSS module. */
     int32_t pinGnssEnablePowerOnState; /**< the value to set pinGnssEnablePower to for "on". */
     int32_t atModulePinPwr; /**< the pin of the AT module that enables power to the GNSS chip (only relevant for transport type AT). */
@@ -255,6 +271,8 @@ typedef struct uGnssPrivateInstance_t {
     uGnssPrivateStreamedPosition_t *pStreamedPosition; /**< context data for streamed position, hooked
                                                             here so that we can free it */
     uGnssRrlpMode_t rrlpMode; /**< The type of MEASX to use with RRLP capture. */
+    uGnssPrivateMga_t *pMga; /**< Storage for AssistNow. */
+    void *pFenceContext; /**< Storage for a uGeofenceContext_t. */
     struct uGnssPrivateInstance_t *pNext;
 } uGnssPrivateInstance_t;
 // *INDENT-ON*
@@ -549,6 +567,16 @@ int32_t uGnssPrivateMessageIdToPublic(const uGnssPrivateMessageId_t *pPrivateMes
  */
 bool uGnssPrivateMessageIdIsWanted(uGnssPrivateMessageId_t *pMessageId,
                                    uGnssPrivateMessageId_t *pMessageIdWanted);
+
+/** Get the various information from the GNSS chip.
+ *
+ * @param[in] pInstance  a pointer to the GNSS instance, cannot be NULL.
+ * @param[out] pVer      a pointer to structure where information is copied.
+ *                       This pointer cannot be NULL.
+ * @return               on sucesss 0, else negative error code.
+ */
+int32_t uGnssPrivateInfoGetVersions(uGnssPrivateInstance_t *pInstance,
+                                    uGnssVersionType_t *pVer);
 
 /* ----------------------------------------------------------------
  * FUNCTIONS: STREAMING TRANSPORT (UART/I2C/VIRTUAL SERIAL) ONLY

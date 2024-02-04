@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -47,7 +47,7 @@
 #include "u_cfg_sw.h"
 #include "u_cfg_app_platform_specific.h"
 #include "u_cfg_test_platform_specific.h"
-#include "u_cfg_os_platform_specific.h"  // For #define U_CFG_OS_CLIB_LEAKS
+#include "u_cfg_os_platform_specific.h"
 
 #include "u_error_common.h"
 
@@ -55,6 +55,8 @@
 #include "u_port_debug.h"
 #include "u_port_os.h"
 #include "u_port_uart.h"
+
+#include "u_test_util_resource_check.h"
 
 #include "u_at_client.h"
 #include "u_short_range_pbuf.h"
@@ -103,7 +105,12 @@ static uShortRangeUartConfig_t uart = { .uartPort = U_CFG_APP_SHORT_RANGE_UART,
                                         .pinTx = U_CFG_APP_PIN_SHORT_RANGE_TXD,
                                         .pinRx = U_CFG_APP_PIN_SHORT_RANGE_RXD,
                                         .pinCts = U_CFG_APP_PIN_SHORT_RANGE_CTS,
-                                        .pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS
+                                        .pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS,
+#ifdef U_CFG_APP_UART_PREFIX // Relevant for Linux only
+                                        .pPrefix = U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX)
+#else
+                                        .pPrefix = NULL
+#endif
                                       };
 
 /* ----------------------------------------------------------------
@@ -124,13 +131,11 @@ static void wifiConnectionCallback(uDeviceHandle_t devHandle,
     (void)channel;
     (void)connId;
     if (status == U_WIFI_CON_STATUS_CONNECTED) {
-#if !U_CFG_OS_CLIB_LEAKS
         U_TEST_PRINT_LINE("connected Wifi connId: %d, bssid: %s, channel: %d.",
                           connId, pBssid, channel);
-#endif
         gWifiConnected = 1;
     } else {
-#if defined(U_CFG_ENABLE_LOGGING) && !U_CFG_OS_CLIB_LEAKS
+#ifndef U_CFG_ENABLE_LOGGING
         //lint -esym(752, strDisconnectReason)
         static const char strDisconnectReason[6][20] = {
             "Unknown", "Remote Close", "Out of range",
@@ -161,15 +166,12 @@ static void wifiNetworkStatusCallback(uDeviceHandle_t devHandle,
     (void)interfaceType;
     (void)statusMask;
     (void)pCallbackParameter;
-#if !U_CFG_OS_CLIB_LEAKS
     U_TEST_PRINT_LINE("network status IPv4 %s, IPv6 %s.",
                       ((statusMask & U_WIFI_STATUS_MASK_IPV4_UP) > 0) ? "up" : "down",
                       ((statusMask & U_WIFI_STATUS_MASK_IPV6_UP) > 0) ? "up" : "down");
-#endif
 
     gWifiStatusMask = statusMask;
 }
-
 
 static uWifiTestError_t runWifiTest(const char *pSsid, const char *pPassPhrase)
 {
@@ -306,24 +308,31 @@ U_PORT_TEST_FUNCTION("[wifi]", "wifiInitialisation")
     uAtClientDeinit();
     uShortRangeEdmStreamDeinit();
     uPortDeinit();
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 /** Add a wifi instance and remove it again.
  */
 U_PORT_TEST_FUNCTION("[wifi]", "wifiOpenUart")
 {
-    int32_t heapUsed;
+    int32_t resourceCount;
     uAtClientHandle_t atClient = NULL;
     uShortRangeUartConfig_t uart = { .uartPort = U_CFG_APP_SHORT_RANGE_UART,
                                      .baudRate = U_SHORT_RANGE_UART_BAUD_RATE,
                                      .pinTx = U_CFG_APP_PIN_SHORT_RANGE_TXD,
                                      .pinRx = U_CFG_APP_PIN_SHORT_RANGE_RXD,
                                      .pinCts = U_CFG_APP_PIN_SHORT_RANGE_CTS,
-                                     .pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS
+                                     .pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS,
+#ifdef U_CFG_APP_UART_PREFIX // Relevant for Linux only
+                                     .pPrefix = U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX)
+#else
+                                     .pPrefix = NULL
+#endif
                                    };
     uPortDeinit();
 
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uPortInit() == 0);
     U_PORT_TEST_ASSERT(uAtClientInit() == 0);
@@ -331,7 +340,9 @@ U_PORT_TEST_FUNCTION("[wifi]", "wifiOpenUart")
                                                 &uart,
                                                 &gHandles) == 0);
     U_PORT_TEST_ASSERT(uShortRangeGetUartHandle(gHandles.devHandle) == gHandles.uartHandle);
+#ifndef U_UCONNECT_GEN2
     U_PORT_TEST_ASSERT(uShortRangeGetEdmStreamHandle(gHandles.devHandle) == gHandles.edmStreamHandle);
+#endif
     uShortRangeAtClientHandleGet(gHandles.devHandle, &atClient);
     U_PORT_TEST_ASSERT(gHandles.atClientHandle == atClient);
     U_PORT_TEST_ASSERT(uShortRangeAttention(gHandles.devHandle) == 0);
@@ -362,20 +373,11 @@ U_PORT_TEST_FUNCTION("[wifi]", "wifiOpenUart")
                                                 &gHandles) < 0);
 
     uWifiTestPrivateCleanup(&gHandles);
-#ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'ed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
-#else
-    (void) heapUsed;
-#endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 U_PORT_TEST_FUNCTION("[wifi]", "wifiNetworkInitialisation")
@@ -430,6 +432,8 @@ U_PORT_TEST_FUNCTION("[wifi]", "wifiNetworkInitialisation")
     uWifiTestPrivatePostamble(&gHandles);
 
     U_PORT_TEST_ASSERT(testError == U_WIFI_TEST_ERROR_NONE);
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 U_PORT_TEST_FUNCTION("[wifi]", "wifiStationConnect")
@@ -438,6 +442,8 @@ U_PORT_TEST_FUNCTION("[wifi]", "wifiStationConnect")
                                              U_PORT_STRINGIFY_QUOTED(U_WIFI_TEST_CFG_WPA2_PASSPHRASE));
     // Handle errors
     U_PORT_TEST_ASSERT(testError == U_WIFI_TEST_ERROR_NONE);
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 U_PORT_TEST_FUNCTION("[wifi]", "wifiStationConnectWrongSSID")
@@ -450,6 +456,8 @@ U_PORT_TEST_FUNCTION("[wifi]", "wifiStationConnectWrongSSID")
     // Handle errors
     U_PORT_TEST_ASSERT(testError == U_WIFI_TEST_ERROR_CONNECTED);
     U_PORT_TEST_ASSERT(gDisconnectReasonFound);
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 U_PORT_TEST_FUNCTION("[wifi]", "wifiStationConnectWrongPassphrase")
@@ -541,6 +549,8 @@ U_PORT_TEST_FUNCTION("[wifi]", "wifiScan")
 
     // Handle errors
     U_PORT_TEST_ASSERT(testError == U_WIFI_TEST_ERROR_NONE);
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 /** Clean-up to be run at the end of this round of tests, just
@@ -550,6 +560,8 @@ U_PORT_TEST_FUNCTION("[wifi]", "wifiScan")
 U_PORT_TEST_FUNCTION("[wifi]", "wifiCleanUp")
 {
     uWifiTestPrivateCleanup(&gHandles);
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 #endif // U_SHORT_RANGE_TEST_WIFI()

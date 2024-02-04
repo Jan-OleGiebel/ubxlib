@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,6 +54,8 @@
 #include "u_port_os.h"
 #include "u_port_uart.h"
 
+#include "u_test_util_resource_check.h"
+
 #include "u_at_client.h"
 #include "u_short_range_pbuf.h"
 #include "u_short_range.h"
@@ -98,22 +100,25 @@ static uBleTestPrivate_t gHandles = { -1, -1, NULL, NULL };
 
 U_PORT_TEST_FUNCTION("[bleCfg]", "bleCfgConfigureModule")
 {
-    int32_t heapUsed;
+    int32_t resourceCount;
     uBleCfg_t cfg;
     uShortRangeUartConfig_t uart = { .uartPort = U_CFG_APP_SHORT_RANGE_UART,
                                      .baudRate = U_SHORT_RANGE_UART_BAUD_RATE,
                                      .pinTx = U_CFG_APP_PIN_SHORT_RANGE_TXD,
                                      .pinRx = U_CFG_APP_PIN_SHORT_RANGE_RXD,
                                      .pinCts = U_CFG_APP_PIN_SHORT_RANGE_CTS,
-                                     .pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS
+                                     .pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS,
+#ifdef U_CFG_APP_UART_PREFIX // Relevant for Linux only
+                                     .pPrefix = U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX)
+#else
+                                     .pPrefix = NULL
+#endif
                                    };
-    heapUsed = uPortGetHeapFree();
-
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uBleTestPrivatePreamble((uBleModuleType_t) U_CFG_TEST_SHORT_RANGE_MODULE_TYPE,
                                                &uart,
                                                &gHandles) == 0);
-
 
     cfg.role = U_BLE_CFG_ROLE_PERIPHERAL;
     cfg.spsServer = true;
@@ -129,20 +134,10 @@ U_PORT_TEST_FUNCTION("[bleCfg]", "bleCfgConfigureModule")
 
     uBleTestPrivatePostamble(&gHandles);
 
-#ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'ed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
-#else
-    (void) heapUsed;
-#endif
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Clean-up to be run at the end of this round of tests, just
@@ -151,8 +146,6 @@ U_PORT_TEST_FUNCTION("[bleCfg]", "bleCfgConfigureModule")
  */
 U_PORT_TEST_FUNCTION("[bleCfg]", "bleCfgCleanUp")
 {
-    int32_t x;
-
     uBleDeinit();
     if (gHandles.edmStreamHandle >= 0) {
         uShortRangeEdmStreamClose(gHandles.edmStreamHandle);
@@ -162,20 +155,8 @@ U_PORT_TEST_FUNCTION("[bleCfg]", "bleCfgCleanUp")
         uPortUartClose(gHandles.uartHandle);
     }
 
-    x = uPortTaskStackMinFree(NULL);
-    if (x != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d byte(s)"
-                          " free at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-    uPortDeinit();
-
-    x = uPortGetHeapMinFree();
-    if (x >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free"
-                          " at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 #endif // U_SHORT_RANGE_TEST_BLE()

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@
 #include "u_error_common.h"
 
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_uart.h"
 
@@ -127,9 +128,13 @@ static int32_t addDevice(const uDeviceCfgUart_t *pCfgUart,
 {
     int32_t errorCode = (int32_t) U_ERROR_COMMON_NO_MEMORY;
     uDeviceCellContext_t *pContext;
+    uAtClientStreamHandle_t stream;
 
     pContext = (uDeviceCellContext_t *) pUPortMalloc(sizeof(uDeviceCellContext_t));
     if (pContext != NULL) {
+        if (pCfgUart->pPrefix != NULL) {
+            uPortUartPrefix(pCfgUart->pPrefix);
+        }
         // Open a UART with the recommended buffer length
         // and default baud rate.
         errorCode = uPortUartOpen(pCfgUart->uart,
@@ -143,11 +148,11 @@ static int32_t addDevice(const uDeviceCfgUart_t *pCfgUart,
             pContext->uart = errorCode;
             // Add an AT client on the UART with the recommended
             // default buffer size.
+            stream.handle.int32 = errorCode;
+            stream.type = U_AT_CLIENT_STREAM_TYPE_UART;
             errorCode = (int32_t) U_CELL_ERROR_AT;
-            pContext->at = uAtClientAdd(pContext->uart,
-                                        U_AT_CLIENT_STREAM_TYPE_UART,
-                                        NULL,
-                                        U_CELL_AT_BUFFER_LENGTH_BYTES);
+            pContext->at = uAtClientAddExt(&stream, NULL,
+                                           U_CELL_AT_BUFFER_LENGTH_BYTES);
             if (pContext->at != NULL) {
                 // Set printing of AT commands by the cellular driver,
                 // which can be useful while debugging.
@@ -242,7 +247,8 @@ int32_t uDevicePrivateCellAdd(const uDeviceCfg_t *pDevCfg,
     const uDeviceCfgCell_t *pCfgCell;
 
     if ((pDevCfg != NULL) &&
-        (pDevCfg->transportType == U_DEVICE_TRANSPORT_TYPE_UART) &&
+        ((pDevCfg->transportType == U_DEVICE_TRANSPORT_TYPE_UART) ||
+         (pDevCfg->transportType == U_DEVICE_TRANSPORT_TYPE_UART_USB)) &&
         (pDeviceHandle != NULL)) {
         pCfgUart = &(pDevCfg->transportCfg.cfgUart);
         pCfgCell = &(pDevCfg->deviceCfg.cfgCell);

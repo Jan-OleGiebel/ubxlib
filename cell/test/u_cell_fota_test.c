@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,6 +49,8 @@
 #include "u_port.h"
 #include "u_port_debug.h"
 #include "u_port_os.h"   // Required by u_cell_private.h
+
+#include "u_test_util_resource_check.h"
 
 #include "u_at_client.h"
 
@@ -117,15 +119,14 @@ U_PORT_TEST_FUNCTION("[cellFota]", "cellFotaVeryBasicIndeed")
 {
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
-    int32_t heapUsed;
-    int32_t heapFotaInitLoss = 0;
+    int32_t resourceCount;
     int32_t x;
 
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -143,13 +144,7 @@ U_PORT_TEST_FUNCTION("[cellFota]", "cellFotaVeryBasicIndeed")
 
         U_TEST_PRINT_LINE("setting FOTA call-back.");
 
-        // The first call to FOTA will allocate a context which
-        // is not deallocated until cellular is taken down, which
-        // we don't do here to save time; take account of that
-        // initialisation heap cost here.
-        heapFotaInitLoss = uPortGetHeapFree();
         x = uCellFotaSetStatusCallback(cellHandle, -1, fotaStatusCallback, NULL);
-        heapFotaInitLoss -= uPortGetHeapFree();
         if (U_CELL_PRIVATE_HAS(pModule, U_CELL_PRIVATE_FEATURE_FOTA)) {
             U_PORT_TEST_ASSERT(x == 0);
             x = uCellFotaSetStatusCallback(cellHandle, -1, NULL, NULL);
@@ -171,13 +166,11 @@ U_PORT_TEST_FUNCTION("[cellFota]", "cellFotaVeryBasicIndeed")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("during this part of the test %d byte(s)"
-                      " were lost to cell FOTA initialisation; we"
-                      " have leaked %d byte(s).",
-                      heapFotaInitLoss, heapUsed - heapFotaInitLoss);
-    U_PORT_TEST_ASSERT(heapUsed <= heapFotaInitLoss);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Clean-up to be run at the end of this round of tests, just
@@ -186,25 +179,10 @@ U_PORT_TEST_FUNCTION("[cellFota]", "cellFotaVeryBasicIndeed")
  */
 U_PORT_TEST_FUNCTION("[cellFota]", "cellFotaCleanUp")
 {
-    int32_t x;
-
     uCellTestPrivateCleanup(&gHandles);
-
-    x = uPortTaskStackMinFree(NULL);
-    if (x != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d"
-                          " byte(s) free at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-    x = uPortGetHeapMinFree();
-    if (x >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free"
-                          " at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 #endif // #ifdef U_CFG_TEST_CELL_MODULE_TYPE

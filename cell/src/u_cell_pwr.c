@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,10 +39,10 @@
 
 #include "u_error_common.h"
 
-#include "u_port_heap.h"
 #include "u_port.h"
-#include "u_port_debug.h"
 #include "u_port_os.h"
+#include "u_port_heap.h"
+#include "u_port_debug.h"
 #include "u_port_gpio.h"
 #include "u_port_uart.h"
 
@@ -58,6 +58,7 @@
 #include "u_cell_cfg.h"
 #include "u_cell_mux.h"
 #include "u_cell_mux_private.h"
+#include "u_cell_ppp_shared.h"
 #include "u_cell_pwr.h"
 #include "u_cell_pwr_private.h"
 
@@ -85,6 +86,13 @@
                                                                         (((value) + 1) * 256 / 100) :   \
                                                                         (((value) + 1) * 128 / 100))
 
+#ifndef U_CELL_PWR_GNSS_PROFILE_BITS_EXTRA
+/** The extra bits to OR into the GNSS IO configuration (AT+UGPRF);
+ * set a negative value and this code will not set AT+UGPRF.
+ */
+# define U_CELL_PWR_GNSS_PROFILE_BITS_EXTRA 0
+#endif
+
 /* ----------------------------------------------------------------
  * TYPES
  * -------------------------------------------------------------- */
@@ -99,7 +107,7 @@ typedef enum {
     U_CELL_PWR_PSV_MODE_DATA = 1,        /**< Module wakes up on TXD line activity, SARA-U201/SARA-R5 version. */
     U_CELL_PWR_PSV_MODE_RTS = 2,         /**< Module wakes up on RTS line being asserted (not used in this code). */
     U_CELL_PWR_PSV_MODE_DTR = 3,         /**< Module wakes up on DTR line being asserted. */
-    U_CELL_PWR_PSV_MODE_DATA_SARA_R4 = 4 /**< Module wakes up on TXD line activity, SARA-R4 version. */
+    U_CELL_PWR_PSV_MODE_DATA_SARA_R4_LENA_R8 = 4 /**< Module wakes up on TXD line activity, SARA-R4/LENA-R8 version. */
 } uCellPwrPsvMode_t;
 
 /** All the parameters for a wake-up-from-deep sleep callback.
@@ -185,7 +193,7 @@ static const int32_t gCellRatToCedrxsRat[] = { -1, // U_CELL_NET_RAT_DUMMY
                                                -1, // U_CELL_NET_RAT_EC_GSM
                                                4,  // U_CELL_NET_RAT_CATM1
                                                5   // U_CELL_NET_RAT_NB1
-                                               };
+                                             };
 
 /** Array to convert E-DRX values for Cat-M1 in seconds into the number
  * value of 24.008 table 10.5.5.34 (the index of the entry in the array
@@ -200,6 +208,20 @@ static const int32_t gEdrxCatM1SecondsToNumber[] = {5, 10, 20, 41, 61, 82, 102, 
  */
 static const int32_t gEdrxNb1SecondsToNumber[] = {-1, -1, 20, 41, 20, 82, 20, 20, 20, 164, 328, 655, 1310, 2621, 5243, 10486};
 
+/** Array to compare the module names from the devices.
+ * This string array and the uCellModuleType_t should be kept synchronized.
+ * The order of module types must match.
+ */
+static const char *gModuleNames[] = {"SARA-U2",
+                                     "SARA-R410M-02B",
+                                     "SARA-R412M-02B",
+                                     "SARA-R412M-03B",
+                                     "SARA-R5",
+                                     "SARA-R410M-03B",
+                                     "SARA-R422",
+                                     "LARA-R6",
+                                     "LENA-R8"
+                                    };
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS: 3GPP POWER SAVING
  * -------------------------------------------------------------- */
@@ -609,7 +631,7 @@ int32_t readCedrxsOrCedrxrdp(const uCellPrivateInstance_t *pInstance, bool rdpNo
         uAtClientResponseStop(atHandle);
         uAtClientUnlock(atHandle);
         if (eDrxSecondsRequested >= 0) {
-            // Having decoded a requested E-DRX value constitues success
+            // Having decoded a requested E-DRX value constitutes success
             errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
             if (pEDrxSecondsRequested != NULL) {
                 *pEDrxSecondsRequested = eDrxSecondsRequested;
@@ -857,51 +879,6 @@ static void UUPSMR_urc(uAtClientHandle_t atHandle, void *pParameter)
  * STATIC FUNCTIONS: POWERING UP/DOWN
  * -------------------------------------------------------------- */
 
-// Check that the cellular module is alive.
-static int32_t moduleIsAlive(uCellPrivateInstance_t *pInstance,
-                             int32_t attempts)
-{
-    int32_t errorCode = (int32_t) U_ERROR_COMMON_NOT_RESPONDING;
-    uAtClientDeviceError_t deviceError;
-    uAtClientHandle_t atHandle = pInstance->atHandle;
-    bool isAlive = false;
-
-    // It may be that we have been called when an AT client
-    // has just been instantiated (so it has no knowledge of
-    // previous transmit events against which to measure an
-    // inactivity time-out) and yet the module is already
-    // powered-on but is in UART power saving mode; call the
-    // wake-up call-back here to handle that case
-    if (!pInstance->inWakeUpCallback &&
-        (uCellPrivateWakeUpCallback(atHandle, pInstance) == 0)) {
-        // If it responds at this point then it must be alive,
-        // job done
-        isAlive = true;
-    } else {
-        // See if the cellular module is responding at the AT interface
-        // by poking it with "AT" up to "attempts" times.
-        // The response can be "OK" or it can also be "CMS/CMS ERROR"
-        // if the modem happened to be awake and in the middle
-        // of something from a previous command.
-        for (int32_t x = 0; !isAlive && (x < attempts); x++) {
-            uAtClientLock(atHandle);
-            uAtClientTimeoutSet(atHandle,
-                                pInstance->pModule->responseMaxWaitMs);
-            uAtClientCommandStart(atHandle, "AT");
-            uAtClientCommandStopReadResponse(atHandle);
-            uAtClientDeviceErrorGet(atHandle, &deviceError);
-            isAlive = (uAtClientUnlock(atHandle) == 0) ||
-                      (deviceError.type != U_AT_CLIENT_DEVICE_ERROR_TYPE_NO_ERROR);
-        }
-    }
-
-    if (isAlive) {
-        errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
-    }
-
-    return errorCode;
-}
-
 // Configure one item in the cellular module.
 static bool moduleConfigureOne(uAtClientHandle_t atHandle,
                                const char *pAtString,
@@ -925,12 +902,13 @@ static int32_t moduleConfigure(uCellPrivateInstance_t *pInstance,
     int32_t errorCode = (int32_t) U_CELL_ERROR_NOT_CONFIGURED;
     bool success = true;
     uAtClientHandle_t atHandle = pInstance->atHandle;
-    int32_t atStreamHandle;
+    uAtClientStreamHandle_t stream = U_AT_CLIENT_STREAM_HANDLE_DEFAULTS;
     uCellPwrPsvMode_t uartPowerSavingMode = U_CELL_PWR_PSV_MODE_DISABLED; // Assume no UART power saving
-    uAtClientStream_t atStreamType;
     char buffer[20]; // Enough room for AT+UPSV=2,1300
+#if U_CELL_PWR_GNSS_PROFILE_BITS_EXTRA >= 0
     char *pServerNameGnss;
     int32_t y;
+#endif
 
     // First send all the commands that everyone gets
     for (size_t x = 0;
@@ -941,6 +919,7 @@ static int32_t moduleConfigure(uCellPrivateInstance_t *pInstance,
     }
 
     if (success &&
+        U_CELL_PRIVATE_HAS(pInstance->pModule, U_CELL_PRIVATE_FEATURE_UCGED) &&
         (U_CELL_PRIVATE_MODULE_IS_SARA_R4(pInstance->pModule->moduleType) ||
          (pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_LARA_R6))) {
         // SARA-R4 and LARA-R6 only: switch on the right UCGED mode
@@ -954,14 +933,14 @@ static int32_t moduleConfigure(uCellPrivateInstance_t *pInstance,
         }
     }
 
-    atStreamHandle = uAtClientStreamGet(atHandle, &atStreamType);
-    if (success && (atStreamType == U_AT_CLIENT_STREAM_TYPE_UART)) {
+    uAtClientStreamGetExt(atHandle, &stream);
+    if (success && (stream.type == U_AT_CLIENT_STREAM_TYPE_UART)) {
         // Get the UART stream handle and set the flow
         // control and power saving mode correctly for it
         // TODO: check if AT&K3 requires both directions
         // of flow control to be on or just one of them
-        if (uPortUartIsRtsFlowControlEnabled(atStreamHandle) &&
-            uPortUartIsCtsFlowControlEnabled(atStreamHandle)) {
+        if (uPortUartIsRtsFlowControlEnabled(stream.handle.int32) &&
+            uPortUartIsCtsFlowControlEnabled(stream.handle.int32)) {
             success = moduleConfigureOne(atHandle, "AT&K3",
                                          U_CELL_PWR_CONFIGURATION_COMMAND_TRIES);
             if (uAtClientWakeUpHandlerIsSet(atHandle)) {
@@ -978,10 +957,10 @@ static int32_t moduleConfigure(uCellPrivateInstance_t *pInstance,
                 // temporary basis
                 if (U_CELL_PRIVATE_HAS(pInstance->pModule,
                                        U_CELL_PRIVATE_FEATURE_UART_POWER_SAVING) &&
-                    (uPortUartCtsSuspend(atStreamHandle) == 0)) {
+                    (uPortUartCtsSuspend(stream.handle.int32) == 0)) {
                     // It does: resume CTS and we can use the wake-up on
                     // TX line feature for power saving
-                    uPortUartCtsResume(atStreamHandle);
+                    uPortUartCtsResume(stream.handle.int32);
                     uartPowerSavingMode = U_CELL_PWR_PSV_MODE_DATA;
                 }
             }
@@ -1012,7 +991,8 @@ static int32_t moduleConfigure(uCellPrivateInstance_t *pInstance,
     }
 
     if (uAtClientWakeUpHandlerIsSet(atHandle) &&
-        U_CELL_PRIVATE_MODULE_IS_SARA_R4(pInstance->pModule->moduleType)) {
+        (U_CELL_PRIVATE_MODULE_IS_SARA_R4(pInstance->pModule->moduleType) ||
+         pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_LENA_R8)) {
         // SARA-R4 doesn't support modes 1, 2 or 3 but
         // does support the functionality of mode 1
         // though numbered as mode 4 and without the
@@ -1022,12 +1002,17 @@ static int32_t moduleConfigure(uCellPrivateInstance_t *pInstance,
         // module: it would appear the module incoming
         // flow control line (CTS) is held low ("on") even
         // while the module is asleep in the SARA-R4 case.
-        uartPowerSavingMode = U_CELL_PWR_PSV_MODE_DATA_SARA_R4;
+        // Meanwhile, LENA-R8 supports all of the modes, including
+        // the timing parameter, but renumbers 1 as 4, just to
+        // be different
+        uartPowerSavingMode = U_CELL_PWR_PSV_MODE_DATA_SARA_R4_LENA_R8;
     }
 
     if (success) {
         // Assemble the UART power saving mode AT command
-        if (uartPowerSavingMode == U_CELL_PWR_PSV_MODE_DATA) {
+        if ((uartPowerSavingMode == U_CELL_PWR_PSV_MODE_DATA) ||
+            ((uartPowerSavingMode == U_CELL_PWR_PSV_MODE_DATA_SARA_R4_LENA_R8) &&
+             (pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_LENA_R8))) {
             snprintf(buffer, sizeof(buffer), "AT+UPSV=%d,%d",
                      (int) uartPowerSavingMode,
                      U_CELL_PWR_UART_POWER_SAVING_GSM_FRAMES);
@@ -1093,15 +1078,19 @@ static int32_t moduleConfigure(uCellPrivateInstance_t *pInstance,
     }
 
     if (success) {
-        // Retrieve and store the current MNO profile
         pInstance->mnoProfile = -1;
-        uAtClientLock(atHandle);
-        uAtClientCommandStart(atHandle, "AT+UMNOPROF?");
-        uAtClientCommandStop(atHandle);
-        uAtClientResponseStart(atHandle, "+UMNOPROF:");
-        pInstance->mnoProfile = uAtClientReadInt(atHandle);
-        uAtClientResponseStop(atHandle);
-        uAtClientUnlock(atHandle);
+        if (U_CELL_PRIVATE_HAS(pInstance->pModule,
+                               U_CELL_PRIVATE_FEATURE_MNO_PROFILE)) {
+            // Retrieve and store the current MNO profile
+            uAtClientLock(atHandle);
+            uAtClientCommandStart(atHandle, "AT+UMNOPROF?");
+            uAtClientCommandStop(atHandle);
+            uAtClientResponseStart(atHandle, "+UMNOPROF:");
+            pInstance->mnoProfile = uAtClientReadInt(atHandle);
+            uAtClientResponseStop(atHandle);
+            uAtClientUnlock(atHandle);
+        }
+#if U_CELL_PWR_GNSS_PROFILE_BITS_EXTRA >= 0
         // The module may have a GNSS module inside it or
         // connected via it, in which case, if we are to use
         // that module via CMUX rather than via the clunky
@@ -1117,12 +1106,13 @@ static int32_t moduleConfigure(uCellPrivateInstance_t *pInstance,
             y = uCellPrivateGetGnssProfile(pInstance, pServerNameGnss,
                                            U_CELL_CFG_GNSS_SERVER_NAME_MAX_LEN_BYTES);
             if ((y >= 0) && ((y & U_CELL_CFG_GNSS_PROFILE_MUX) == 0)) {
-                y |= U_CELL_CFG_GNSS_PROFILE_MUX;
+                y = U_CELL_CFG_GNSS_PROFILE_MUX | U_CELL_PWR_GNSS_PROFILE_BITS_EXTRA;
                 uCellPrivateSetGnssProfile(pInstance, y, pServerNameGnss);
             }
             // Free memory
             uPortFree(pServerNameGnss);
         }
+#endif
         if (andRadioOff) {
             // Switch the radio off until commanded to connect
             // Wait for flip time to expire
@@ -1226,10 +1216,6 @@ static int32_t powerOff(uCellPrivateInstance_t *pInstance,
                      (int32_t) !U_CELL_PRIVATE_PWR_ON_PIN_TOGGLE_TO_STATE(pInstance->pinStates));
     }
 
-    // Remove any security context as these disappear
-    // at power off
-    uCellPrivateC2cRemoveContext(pInstance);
-
     return errorCode;
 }
 
@@ -1257,10 +1243,39 @@ static void quickPowerOff(uCellPrivateInstance_t *pInstance,
             uPortGpioSet(pInstance->pinEnablePower,
                          (int32_t) !U_CELL_PRIVATE_ENABLE_POWER_PIN_ON_STATE(pInstance->pinStates));
         }
-        // Remove any security context as these disappear
-        // at power off
-        uCellPrivateC2cRemoveContext(pInstance);
     }
+}
+
+// Identify the module type read from module
+static uCellModuleType_t identifyCellModuleType(uDeviceHandle_t cellHandle)
+{
+    char buffer[64] = {0};
+    int32_t errorCodeOrType = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
+    int32_t idSize;
+    uCellPrivateInstance_t *pInstance;
+
+    pInstance = pUCellPrivateGetInstance(cellHandle);
+    if (pInstance != NULL) {
+        // Two goes here in case if the module type is not read successfully
+        // or some URC is interrupting us.
+        for (size_t x = 2; (x > 0) && (errorCodeOrType < 0); x--) {
+            errorCodeOrType = uCellPrivateGetIdStr(pInstance->atHandle, "AT+CGMM",
+                                                   buffer, sizeof(buffer));
+            idSize = errorCodeOrType;
+            errorCodeOrType = (int32_t) U_ERROR_COMMON_UNKNOWN_MODULE_TYPE;
+            if (idSize > 0) {
+                // compare the module type with the supported ones
+                for (size_t y = 0; (y < (U_CELL_MODULE_TYPE_MAX_NUM - 1)) &&
+                     (errorCodeOrType < 0); y++) {
+                    if (strstr(buffer, gModuleNames[y]) != NULL) {
+                        errorCodeOrType = (uCellModuleType_t) y;
+                    }
+                }
+            }
+        }
+    }
+
+    return errorCodeOrType;
 }
 
 /* ----------------------------------------------------------------
@@ -1283,6 +1298,7 @@ int32_t uCellPwrPrivateOn(uCellPrivateInstance_t *pInstance,
     int32_t enablePowerAtStart = 1;
     bool asleepAtStart = (pInstance->deepSleepState == U_CELL_PRIVATE_DEEP_SLEEP_STATE_ASLEEP);
     uDeviceHandle_t cellHandle = pInstance->cellHandle;
+    uCellModuleType_t readModuleType = U_CELL_MODULE_TYPE_ANY;
     uCellPrivateSleep_t *pSleepContext = pInstance->pSleepContext;
     uCellPwrDeepSleepWakeUpCallback_t *pCallback;
 
@@ -1307,23 +1323,38 @@ int32_t uCellPwrPrivateOn(uCellPrivateInstance_t *pInstance,
     if (((pInstance->pinVInt >= 0) &&
          (uPortGpioGet(pInstance->pinVInt) == U_CELL_PRIVATE_VINT_PIN_ON_STATE(pInstance->pinStates))) ||
         ((pInstance->pinVInt < 0) &&
-         (moduleIsAlive(pInstance, 1) == 0))) {
+         (uCellPwrPrivateIsAlive(pInstance, 1) == 0))) {
         uPortLog("U_CELL_PWR: powering on, module is already on.\n");
-        // Configure the module.  Since it was already
-        // powered on we might have been called from
-        // a state where everything was already fine
-        // and dandy so only switch the radio off at
-        // the end of configuration if we are not
-        // already registered
-        errorCode = moduleConfigure(pInstance,
-                                    !uCellPrivateIsRegistered(pInstance),
-                                    asleepAtStart);
-        if (errorCode != 0) {
-            // I have seen situations where the module responds
-            // initially and then fails configuration.  If that is
-            // the case then make sure it's definitely off before
-            // we go any further
-            quickPowerOff(pInstance, pKeepGoingCallback);
+        if (pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_ANY) {
+            // Read and compare the name with available module types.
+            readModuleType = identifyCellModuleType(cellHandle);
+            errorCode = readModuleType;
+            if ((errorCode >= 0) && (readModuleType < (U_CELL_MODULE_TYPE_MAX_NUM - 1))) {
+                pInstance->pModule = &(gUCellPrivateModuleList[readModuleType]);
+                uPortLog("U_CELL_PWR: Identified module type: %s\n", gModuleNames[readModuleType]);
+                uCellPrivateModuleSpecificSetting(pInstance);
+            } else {
+                uPortLog("U_CELL_PWR: could not identify the module type.\n");
+                errorCode = U_ERROR_COMMON_UNKNOWN_MODULE_TYPE;
+            }
+        }
+        if (pInstance->pModule->moduleType != U_CELL_MODULE_TYPE_ANY) {
+            // Configure the module.  Since it was already
+            // powered on we might have been called from
+            // a state where everything was already fine
+            // and dandy so only switch the radio off at
+            // the end of configuration if we are not
+            // already registered
+            errorCode = moduleConfigure(pInstance,
+                                        !uCellPrivateIsRegistered(pInstance),
+                                        asleepAtStart);
+            if (errorCode != 0) {
+                // I have seen situations where the module responds
+                // initially and then fails configuration.  If that is
+                // the case then make sure it's definitely off before
+                // we go any further
+                quickPowerOff(pInstance, pKeepGoingCallback);
+            }
         }
     }
     // Two goes at this, 'cos I've seen some module types
@@ -1368,20 +1399,39 @@ int32_t uCellPwrPrivateOn(uCellPrivateInstance_t *pInstance,
                  (y > 0) && (errorCode != 0) &&
                  ((pKeepGoingCallback == NULL) || pKeepGoingCallback(cellHandle));
                  y--) {
-                errorCode = moduleIsAlive(pInstance, 1);
+                errorCode = uCellPwrPrivateIsAlive(pInstance, 1);
             }
             if (errorCode == 0) {
-                // Configure the module, only putting into radio-off
-                // mode if we weren't already registered at the start
-                // (e.g. we might have been in 3GPP sleep, which retains
-                // the registration status)
-                errorCode = moduleConfigure(pInstance,
-                                            !uCellPrivateIsRegistered(pInstance),
-                                            asleepAtStart);
-                if (errorCode != 0) {
-                    // If the module fails configuration, power it
-                    // off and try again
-                    quickPowerOff(pInstance, pKeepGoingCallback);
+                if (pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_ANY) {
+                    // Read and compare the name with available module types.
+                    readModuleType = identifyCellModuleType(cellHandle);
+                    errorCode = readModuleType;
+                    if ((errorCode >= 0) && (readModuleType < (U_CELL_MODULE_TYPE_MAX_NUM - 1))) {
+                        pInstance->pModule = &(gUCellPrivateModuleList[readModuleType]);
+                        uPortLog("U_CELL_PWR: Identified module type: %s\n", gModuleNames[readModuleType]);
+                        uCellPrivateModuleSpecificSetting(pInstance);
+                    } else {
+                        uPortLog("U_CELL_PWR: could not identify the module type.\n");
+                        errorCode = U_ERROR_COMMON_UNKNOWN_MODULE_TYPE;
+                    }
+                }
+                if (pInstance->pModule->moduleType != U_CELL_MODULE_TYPE_ANY) {
+                    // Check here again 'cos the module type should be changed
+                    // if read successfully from the cellular device. Also for
+                    // backward compatibility.
+
+                    // Configure the module, only putting into radio-off
+                    // mode if we weren't already registered at the start
+                    // (e.g. we might have been in 3GPP sleep, which retains
+                    // the registration status)
+                    errorCode = moduleConfigure(pInstance,
+                                                !uCellPrivateIsRegistered(pInstance),
+                                                asleepAtStart);
+                    if (errorCode != 0) {
+                        // If the module fails configuration, power it
+                        // off and try again
+                        quickPowerOff(pInstance, pKeepGoingCallback);
+                    }
                 }
             }
         } else {
@@ -1399,6 +1449,15 @@ int32_t uCellPwrPrivateOn(uCellPrivateInstance_t *pInstance,
         quickPowerOff(pInstance, pKeepGoingCallback);
     }
 
+    if ((errorCode == 0) && U_CELL_PRIVATE_HAS(pInstance->pModule,
+                                               U_CELL_PRIVATE_FEATURE_PPP)) {
+        // A PPP connection may now be opened by a platform
+        errorCode = uPortPppAttach(pInstance->cellHandle, uCellPppOpen, uCellPppClose, uCellPppTransmit);
+        if (errorCode == (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
+            errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+        }
+    }
+
     // If we were successful, were asleep at the start and there is
     // a wake-up callback then call it
     if (asleepAtStart && (errorCode == 0) && (pSleepContext != NULL) &&
@@ -1414,6 +1473,51 @@ int32_t uCellPwrPrivateOn(uCellPrivateInstance_t *pInstance,
             pCallback->pCallbackParam = pSleepContext->pWakeUpCallbackParam;
             uAtClientCallback(pInstance->atHandle, deepSleepWakeUpCallback, pCallback);
         }
+    }
+
+    return errorCode;
+}
+
+// Check that the cellular module is alive.
+int32_t uCellPwrPrivateIsAlive(uCellPrivateInstance_t *pInstance,
+                               int32_t attempts)
+{
+    int32_t errorCode = (int32_t) U_ERROR_COMMON_NOT_RESPONDING;
+    uAtClientDeviceError_t deviceError;
+    uAtClientHandle_t atHandle = pInstance->atHandle;
+    bool isAlive = false;
+
+    // It may be that we have been called when an AT client
+    // has just been instantiated (so it has no knowledge of
+    // previous transmit events against which to measure an
+    // inactivity time-out) and yet the module is already
+    // powered-on but is in UART power saving mode; call the
+    // wake-up call-back here to handle that case
+    if (!pInstance->inWakeUpCallback &&
+        (uCellPrivateWakeUpCallback(atHandle, pInstance) == 0)) {
+        // If it responds at this point then it must be alive,
+        // job done
+        isAlive = true;
+    } else {
+        // See if the cellular module is responding at the AT interface
+        // by poking it with "AT" up to "attempts" times.
+        // The response can be "OK" or it can also be "CMS/CMS ERROR"
+        // if the modem happened to be awake and in the middle
+        // of something from a previous command.
+        for (int32_t x = 0; !isAlive && (x < attempts); x++) {
+            uAtClientLock(atHandle);
+            uAtClientTimeoutSet(atHandle,
+                                pInstance->pModule->responseMaxWaitMs);
+            uAtClientCommandStart(atHandle, "AT");
+            uAtClientCommandStopReadResponse(atHandle);
+            uAtClientDeviceErrorGet(atHandle, &deviceError);
+            isAlive = (uAtClientUnlock(atHandle) == 0) ||
+                      (deviceError.type != U_AT_CLIENT_DEVICE_ERROR_TYPE_NO_ERROR);
+        }
+    }
+
+    if (isAlive) {
+        errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
     }
 
     return errorCode;
@@ -1706,6 +1810,134 @@ int32_t uCellPwrPrivateGetEDrx(const uCellPrivateInstance_t *pInstance,
     return errorCode;
 }
 
+// Get the DTR power-saving pin.
+int32_t uCellPwrPrivateGetDtrPowerSavingPin(const uCellPrivateInstance_t *pInstance)
+{
+    int32_t errorCodeOrPin = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
+
+    if (pInstance != NULL) {
+        errorCodeOrPin = (int32_t) U_ERROR_COMMON_NOT_FOUND;
+        if (pInstance->pinDtrPowerSaving >= 0) {
+            errorCodeOrPin = pInstance->pinDtrPowerSaving;
+        }
+    }
+
+    return errorCodeOrPin;
+}
+
+// Disable 32 kHz sleep.
+int32_t uCellPwrPrivateDisableUartSleep(uCellPrivateInstance_t *pInstance)
+{
+    int32_t errorCode = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
+    uCellPrivateUartSleepCache_t *pUartSleepCache;
+    uAtClientHandle_t atHandle;
+
+    if (pInstance != NULL) {
+        pUartSleepCache = &(pInstance->uartSleepCache);
+        // If a wake-up handler has been set then the module supports
+        // UART sleep, if it has not then it doesn't and we can say so
+        atHandle = pInstance->atHandle;
+        // If a sleep handler is not set then sleep is already
+        // disabled, so that's fine
+        errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+        if (uAtClientWakeUpHandlerIsSet(atHandle)) {
+            // Read and stash the current UART sleep parameters
+            uAtClientLock(atHandle);
+            uAtClientCommandStart(atHandle, "AT+UPSV?");
+            uAtClientCommandStop(atHandle);
+            uAtClientResponseStart(atHandle, "+UPSV:");
+            pUartSleepCache->mode = uAtClientReadInt(atHandle);
+            if ((pUartSleepCache->mode == 1) ||
+                ((pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_LENA_R8) &&
+                 (pUartSleepCache->mode == 4))) {
+                // Mode 1 has a time attached, as does mode 4 but only if this
+                // is LENA-R8
+                pUartSleepCache->sleepTime = uAtClientReadInt(atHandle);
+            }
+            uAtClientResponseStop(atHandle);
+            errorCode = uAtClientUnlock(atHandle);
+            if (errorCode == 0) {
+                // Now switch off sleep and remove the handler,
+                // so that everyone knows sleep is gone
+                uAtClientLock(atHandle);
+                uAtClientCommandStart(atHandle, "AT+UPSV=");
+                uAtClientWriteInt(atHandle, 0);
+                uAtClientCommandStopReadResponse(atHandle);
+                errorCode = uAtClientUnlock(atHandle);
+                if (errorCode == 0) {
+                    uAtClientSetWakeUpHandler(atHandle, NULL, NULL, 0);
+                }
+            }
+        }
+    }
+
+    return errorCode;
+}
+
+// Enable 32 kHz sleep.
+int32_t uCellPwrPrivateEnableUartSleep(uCellPrivateInstance_t *pInstance)
+{
+    int32_t errorCode = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
+    uCellPrivateUartSleepCache_t *pUartSleepCache;
+    uAtClientHandle_t atHandle;
+
+    if (pInstance != NULL) {
+        pUartSleepCache = &(pInstance->uartSleepCache);
+        errorCode = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
+        atHandle = pInstance->atHandle;
+        if (uAtClientWakeUpHandlerIsSet(atHandle)) {
+            // If the sleep handler is set the sleep is already
+            // enabled, there is nothing to do
+            errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+        } else {
+            // If no sleep handler is set then either sleep
+            // is not supported or it has been disabled:
+            // if it has been disabled then the cache
+            // will contain the previous mode so check it
+            if (pUartSleepCache->mode > 0) {
+                // There is a cached mode, put it back again
+#ifndef U_CFG_CELL_DISABLE_UART_POWER_SAVING
+                uAtClientLock(atHandle);
+                uAtClientCommandStart(atHandle, "AT+UPSV=");
+                uAtClientWriteInt(atHandle, pUartSleepCache->mode);
+                if (pUartSleepCache->mode == 1) {
+                    // Mode 1 has a time
+                    uAtClientWriteInt(atHandle, pUartSleepCache->sleepTime);
+                }
+                uAtClientCommandStopReadResponse(atHandle);
+                errorCode = uAtClientUnlock(atHandle);
+                if (errorCode == 0) {
+                    // Empty the cache so that we know sleep
+                    // has been re-enabled
+                    pUartSleepCache->mode = 0;
+                    pUartSleepCache->sleepTime = 0;
+                    uAtClientSetWakeUpHandler(atHandle, uCellPrivateWakeUpCallback, pInstance,
+                                              (U_CELL_POWER_SAVING_UART_INACTIVITY_TIMEOUT_SECONDS * 1000) -
+                                              U_CELL_POWER_SAVING_UART_WAKEUP_MARGIN_MILLISECONDS);
+                } else {
+                    // Return a clearer error code than "AT error"
+                    errorCode = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
+                }
+#endif
+            }
+        }
+    }
+
+    return errorCode;
+}
+
+// Determine whether UART, AKA 32 kHz, sleep is enabled or not.
+bool uCellPwrPrivateUartSleepIsEnabled(const uCellPrivateInstance_t *pInstance)
+{
+    bool isEnabled = false;
+
+    if (pInstance != NULL) {
+        isEnabled = uAtClientWakeUpHandlerIsSet(pInstance->atHandle);
+    }
+
+    return isEnabled;
+}
+
 /* ----------------------------------------------------------------
  * PUBLIC FUNCTIONS
  * -------------------------------------------------------------- */
@@ -1748,7 +1980,7 @@ bool uCellPwrIsAlive(uDeviceHandle_t cellHandle)
 
         pInstance = pUCellPrivateGetInstance(cellHandle);
         if (pInstance != NULL) {
-            isAlive = (moduleIsAlive(pInstance, 1) == 0);
+            isAlive = (uCellPwrPrivateIsAlive(pInstance, 1) == 0);
         }
 
         U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
@@ -1795,6 +2027,9 @@ int32_t uCellPwrOff(uDeviceHandle_t cellHandle,
 
     if (gUCellPrivateMutex != NULL) {
 
+        // Detach any PPP connection
+        uPortPppDetach(cellHandle);
+
         U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
 
         pInstance = pUCellPrivateGetInstance(cellHandle);
@@ -1820,6 +2055,9 @@ int32_t uCellPwrOffHard(uDeviceHandle_t cellHandle, bool trulyHard,
 
     if (gUCellPrivateMutex != NULL) {
 
+        // Detach any PPP connection
+        uPortPppDetach(cellHandle);
+
         U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
 
         pInstance = pUCellPrivateGetInstance(cellHandle);
@@ -1834,9 +2072,6 @@ int32_t uCellPwrOffHard(uDeviceHandle_t cellHandle, bool trulyHard,
                              (int32_t) !U_CELL_PRIVATE_ENABLE_POWER_PIN_ON_STATE(pInstance->pinStates));
                 // Need to disable mux mode
                 uCellMuxPrivateDisable(pInstance);
-                // Remove any security context as these disappear
-                // at power off
-                uCellPrivateC2cRemoveContext(pInstance);
                 errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
             } else {
                 if (pInstance->pinPwrOn >= 0) {
@@ -1870,9 +2105,6 @@ int32_t uCellPwrOffHard(uDeviceHandle_t cellHandle, bool trulyHard,
                         uPortGpioSet(pInstance->pinEnablePower,
                                      (int32_t) !U_CELL_PRIVATE_ENABLE_POWER_PIN_ON_STATE(pInstance->pinStates));
                     }
-                    // Remove any security context as these disappear
-                    // at power off
-                    uCellPrivateC2cRemoveContext(pInstance);
                     errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
                 }
             }
@@ -1906,7 +2138,6 @@ bool uCellPwrRebootIsRequired(uDeviceHandle_t cellHandle)
     return rebootIsRequired;
 }
 
-
 // Re-boot the cellular module.
 int32_t uCellPwrReboot(uDeviceHandle_t cellHandle,
                        bool (*pKeepGoingCallback) (uDeviceHandle_t))
@@ -1917,6 +2148,9 @@ int32_t uCellPwrReboot(uDeviceHandle_t cellHandle,
     bool success = false;
 
     if (gUCellPrivateMutex != NULL) {
+
+        // Disconnect any PPP connection
+        uPortPppDisconnect(cellHandle);
 
         U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
 
@@ -1940,17 +2174,10 @@ int32_t uCellPwrReboot(uDeviceHandle_t cellHandle,
             // Clear the dynamic parameters
             uCellPrivateClearDynamicParameters(pInstance);
             uAtClientCommandStart(atHandle, "AT+CFUN=");
-            if (pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_SARA_R5) {
-                // SARA-R5 doesn't support 15 (which doesn't reset the SIM)
-                uAtClientWriteInt(atHandle, 16);
-            } else {
-                uAtClientWriteInt(atHandle, 15);
-            }
+            uAtClientWriteInt(atHandle, pInstance->pModule->atCFunRebootCommand);
             uAtClientCommandStopReadResponse(atHandle);
             errorCode = uAtClientUnlock(atHandle);
             if (errorCode == 0) {
-                // Remove any security context as these disappear at reboot
-                uCellPrivateC2cRemoveContext(pInstance);
                 // We have rebooted
                 pInstance->rebootIsRequired = false;
                 // Wait for the module to boot
@@ -1968,8 +2195,8 @@ int32_t uCellPwrReboot(uDeviceHandle_t cellHandle,
                         uAtClientFlush(atHandle);
                     }
                     // Wait for the module to return to life and configure it
-                    errorCode = moduleIsAlive(pInstance,
-                                              U_CELL_PWR_IS_ALIVE_ATTEMPTS_POWER_ON);
+                    errorCode = uCellPwrPrivateIsAlive(pInstance,
+                                                       U_CELL_PWR_IS_ALIVE_ATTEMPTS_POWER_ON);
                     if (errorCode == 0) {
                         // Sleep is no longer available
                         pInstance->deepSleepState = U_CELL_PRIVATE_DEEP_SLEEP_STATE_UNAVAILABLE;
@@ -2065,6 +2292,9 @@ int32_t uCellPwrResetHard(uDeviceHandle_t cellHandle, int32_t pinReset)
 
     if (gUCellPrivateMutex != NULL) {
 
+        // Disconnect any PPP connection
+        uPortPppDisconnect(cellHandle);
+
         U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
 
         pInstance = pUCellPrivateGetInstance(cellHandle);
@@ -2089,8 +2319,6 @@ int32_t uCellPwrResetHard(uDeviceHandle_t cellHandle, int32_t pinReset)
                 gpioConfig.direction = U_PORT_GPIO_DIRECTION_OUTPUT;
                 platformError = uPortGpioConfig(&gpioConfig);
                 if (platformError == 0) {
-                    // Remove any security context as these disappear at reboot
-                    uCellPrivateC2cRemoveContext(pInstance);
                     // We have rebooted
                     pInstance->rebootIsRequired = false;
                     startTime = uPortGetTickTimeMs();
@@ -2111,8 +2339,8 @@ int32_t uCellPwrResetHard(uDeviceHandle_t cellHandle, int32_t pinReset)
                     }
                     // Wait for the module to return to life and configure it
                     pInstance->lastCfunFlipTimeMs = uPortGetTickTimeMs();
-                    errorCode = moduleIsAlive(pInstance,
-                                              U_CELL_PWR_IS_ALIVE_ATTEMPTS_POWER_ON);
+                    errorCode = uCellPwrPrivateIsAlive(pInstance,
+                                                       U_CELL_PWR_IS_ALIVE_ATTEMPTS_POWER_ON);
                     if (errorCode == 0) {
                         pInstance->deepSleepState = U_CELL_PRIVATE_DEEP_SLEEP_STATE_UNKNOWN;
                         // Configure the module
@@ -2807,48 +3035,14 @@ int32_t uCellPwrDisableUartSleep(uDeviceHandle_t cellHandle)
 {
     int32_t errorCode = (int32_t) U_ERROR_COMMON_NOT_INITIALISED;
     uCellPrivateInstance_t *pInstance;
-    uCellPrivateUartSleepCache_t *pUartSleepCache;
-    uAtClientHandle_t atHandle;
 
     if (gUCellPrivateMutex != NULL) {
 
         U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
 
         pInstance = pUCellPrivateGetInstance(cellHandle);
-        if ((pInstance != NULL) && (pInstance->pModule != NULL)) {
-            pUartSleepCache = &(pInstance->uartSleepCache);
-            // If a wake-up handler has been set then the module supports
-            // UART sleep, if it has not then it doesn't and we can say so
-            atHandle = pInstance->atHandle;
-            // If a sleep handler is not set then sleep is already
-            // disabled, so that's fine
-            errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
-            if (uAtClientWakeUpHandlerIsSet(atHandle)) {
-                // Read and stash the current UART sleep parameters
-                uAtClientLock(atHandle);
-                uAtClientCommandStart(atHandle, "AT+UPSV?");
-                uAtClientCommandStop(atHandle);
-                uAtClientResponseStart(atHandle, "+UPSV:");
-                pUartSleepCache->mode = uAtClientReadInt(atHandle);
-                if (pUartSleepCache->mode == 1) {
-                    // Mode 1 has a time attached
-                    pUartSleepCache->sleepTime = uAtClientReadInt(atHandle);
-                }
-                uAtClientResponseStop(atHandle);
-                errorCode = uAtClientUnlock(atHandle);
-                if (errorCode == 0) {
-                    // Now switch off sleep and remove the handler,
-                    // so that everyone knows sleep is gone
-                    uAtClientLock(atHandle);
-                    uAtClientCommandStart(atHandle, "AT+UPSV=");
-                    uAtClientWriteInt(atHandle, 0);
-                    uAtClientCommandStopReadResponse(atHandle);
-                    errorCode = uAtClientUnlock(atHandle);
-                    if (errorCode == 0) {
-                        uAtClientSetWakeUpHandler(atHandle, NULL, NULL, 0);
-                    }
-                }
-            }
+        if (pInstance != NULL) {
+            errorCode = uCellPwrPrivateDisableUartSleep(pInstance);
         }
 
         U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
@@ -2862,54 +3056,14 @@ int32_t uCellPwrEnableUartSleep(uDeviceHandle_t cellHandle)
 {
     int32_t errorCode = (int32_t) U_ERROR_COMMON_NOT_INITIALISED;
     uCellPrivateInstance_t *pInstance;
-    uCellPrivateUartSleepCache_t *pUartSleepCache;
-    uAtClientHandle_t atHandle;
 
     if (gUCellPrivateMutex != NULL) {
 
         U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
 
         pInstance = pUCellPrivateGetInstance(cellHandle);
-        if ((pInstance != NULL) && (pInstance->pModule != NULL)) {
-            pUartSleepCache = &(pInstance->uartSleepCache);
-            errorCode = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
-            atHandle = pInstance->atHandle;
-            if (uAtClientWakeUpHandlerIsSet(atHandle)) {
-                // If the sleep handler is set the sleep is already
-                // enabled, there is nothing to do
-                errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
-            } else {
-                // If no sleep handler is set then either sleep
-                // is not supported or it has been disabled:
-                // if it has been disabled then the cache
-                // will contain the previous mode so check it
-                if (pUartSleepCache->mode > 0) {
-                    // There is a cached mode, put it back again
-#ifndef U_CFG_CELL_DISABLE_UART_POWER_SAVING
-                    uAtClientLock(atHandle);
-                    uAtClientCommandStart(atHandle, "AT+UPSV=");
-                    uAtClientWriteInt(atHandle, pUartSleepCache->mode);
-                    if (pUartSleepCache->mode == 1) {
-                        // Mode 1 has a time
-                        uAtClientWriteInt(atHandle, pUartSleepCache->sleepTime);
-                    }
-                    uAtClientCommandStopReadResponse(atHandle);
-                    errorCode = uAtClientUnlock(atHandle);
-                    if (errorCode == 0) {
-                        // Empty the cache so that we know sleep
-                        // has been re-enabled
-                        pUartSleepCache->mode = 0;
-                        pUartSleepCache->sleepTime = 0;
-                        uAtClientSetWakeUpHandler(atHandle, uCellPrivateWakeUpCallback, pInstance,
-                                                  (U_CELL_POWER_SAVING_UART_INACTIVITY_TIMEOUT_SECONDS * 1000) -
-                                                  U_CELL_POWER_SAVING_UART_WAKEUP_MARGIN_MILLISECONDS);
-                    } else {
-                        // Return a clearer error code than "AT error"
-                        errorCode = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
-                    }
-#endif
-                }
-            }
+        if (pInstance != NULL) {
+            errorCode = uCellPwrPrivateEnableUartSleep(pInstance);
         }
 
         U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
@@ -2917,7 +3071,6 @@ int32_t uCellPwrEnableUartSleep(uDeviceHandle_t cellHandle)
 
     return errorCode;
 }
-
 
 // Determine whether UART, AKA 32 kHz, sleep is enabled or not.
 bool uCellPwrUartSleepIsEnabled(uDeviceHandle_t cellHandle)
@@ -2930,8 +3083,8 @@ bool uCellPwrUartSleepIsEnabled(uDeviceHandle_t cellHandle)
         U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
 
         pInstance = pUCellPrivateGetInstance(cellHandle);
-        if ((pInstance != NULL) && (pInstance->pModule != NULL)) {
-            isEnabled = uAtClientWakeUpHandlerIsSet(pInstance->atHandle);
+        if (pInstance != NULL) {
+            isEnabled = uCellPwrPrivateUartSleepIsEnabled(pInstance);
         }
 
         U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
@@ -2939,6 +3092,5 @@ bool uCellPwrUartSleepIsEnabled(uDeviceHandle_t cellHandle)
 
     return isEnabled;
 }
-
 
 // End of file

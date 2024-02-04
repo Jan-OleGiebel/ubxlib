@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,8 +45,8 @@
 #include "u_ble_private.h"
 #include "u_cfg_sw.h"
 #include "u_port.h"
-#include "u_port_heap.h"
 #include "u_port_os.h"
+#include "u_port_heap.h"
 #include "u_short_range.h"
 #include "u_short_range_module_type.h"
 #include "u_short_range_pbuf.h"
@@ -97,7 +97,7 @@ static bool validateBle(uShortRangePrivateInstance_t *pInstance, bleRoleCheck_t 
                  !pCfgBle->spsServer &&
                  pInstance->atHandle != NULL;
             if (ok && roleCheck != BLE_ROLE_ANY) {
-                int32_t currRole = uBlePrivateGetRole(pInstance->atHandle);
+                int32_t currRole = uBlePrivateGetRole(pInstance->devHandle);
                 if (roleCheck == BLE_ROLE_CENTRAL) {
                     ok = currRole == U_BLE_CFG_ROLE_CENTRAL ||
                          currRole == U_BLE_CFG_ROLE_CENTRAL_AND_PERIPHERAL;
@@ -237,13 +237,15 @@ int32_t uBleGapScan(uDeviceHandle_t devHandle,
                                                result.name,
                                                sizeof(result.name),
                                                false) >= 0;
-                result.dataType = uAtClientReadInt(atHandle);
+                int32_t x = uAtClientReadInt(atHandle);
+                ok = ok && (x >= 0);
+                result.dataType = (uint8_t) x;
                 ok = ok && (result.dataType == 1 || result.dataType == 2);
                 if (ok) {
                     ok = false;
-                    int32_t dataLength = uAtClientReadHexData(atHandle, result.data, sizeof(result.data));
-                    if (dataLength >= 0) {
-                        result.dataLength = dataLength;
+                    x = uAtClientReadHexData(atHandle, result.data, sizeof(result.data));
+                    if (x >= 0) {
+                        result.dataLength = (uint8_t) x;
                         ok = true;
                     }
                 }

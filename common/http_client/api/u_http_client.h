@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -233,6 +233,11 @@ typedef struct {
  *                                 potentially a callback function which
  *                                 would make the HTTP request functions
  *                                 non-blocking; cannot be NULL.
+ *                                 IT IS GOOD PRACTICE to assign this,
+ *                                 initially, to
+ *                                 #U_HTTP_CLIENT_CONNECTION_DEFAULT and
+ *                                 then modify the members you want
+ *                                 to be different to the default value.
  * @param[in] pSecurityTlsSettings a pointer to the security settings to
  *                                 be applied if you wish to make an HTTPS
  *                                 connection, NULL for no security.
@@ -272,7 +277,10 @@ void uHttpClientClose(uHttpClientContext_t *pContext);
  *
  * If you are going to perform large PUT requests (e.g. more than 1024
  * bytes) then you should ensure that you have flow control on the interface
- * to the module or you might experience data loss.
+ * to the module or you might experience data loss.  If you do not have
+ * flow control connected when using HTTP with a cellular module this code
+ * will try to detect that data has been lost and, if so, return the error
+ * #U_ERROR_COMMON_TRUNCATED.
  *
  * @param[in] pContext               a pointer to the internal HTTP context
  *                                   structure that was originally returned by
@@ -312,7 +320,10 @@ int32_t uHttpClientPutRequest(uHttpClientContext_t *pContext,
  *
  * If you are going to perform large POST requests (e.g. more than 1024
  * bytes) then you should ensure that you have flow control on the interface
- * to the module or you might experience data loss.
+ * to the module or you might experience data loss.  If you do not have
+ * flow control connected when using HTTP with a cellular module this code
+ * will try to detect that data has been lost and, if so, return the error
+ * #U_ERROR_COMMON_TRUNCATED.
  *
  * @param[in] pContext               a pointer to the internal HTTP context
  *                                   structure that was originally returned by

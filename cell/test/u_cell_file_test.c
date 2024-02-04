@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -50,9 +50,11 @@
                                               before the other port files if
                                               any print or scan function is used. */
 #include "u_port.h"
+#include "u_port_os.h"   // Required by u_cell_private.h
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"   // Required by u_cell_private.h
+
+#include "u_test_util_resource_check.h"
 
 #include "u_at_client.h"
 
@@ -149,7 +151,7 @@ static bool checkTracker(bool *pTracker, size_t size)
  */
 U_PORT_TEST_FUNCTION("[cellFile]", "cellFileWrite")
 {
-    int32_t heapUsed;
+    int32_t resourceCount;
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
     int32_t result;
@@ -162,8 +164,8 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileWrite")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -212,19 +214,18 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileWrite")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test reading file size.
  */
 U_PORT_TEST_FUNCTION("[cellFile]", "cellFileSize")
 {
-    int32_t heapUsed;
+    int32_t resourceCount;
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
     int32_t fileSize = 0;
@@ -233,8 +234,8 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileSize")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -278,19 +279,18 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileSize")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test block reading from file.
  */
 U_PORT_TEST_FUNCTION("[cellFile]", "cellFileBlockRead")
 {
-    int32_t heapUsed;
+    int32_t resourceCount;
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
     int32_t result;
@@ -301,8 +301,8 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileBlockRead")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -346,19 +346,18 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileBlockRead")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test reading whole file.
  */
 U_PORT_TEST_FUNCTION("[cellFile]", "cellFileRead")
 {
-    int32_t heapUsed;
+    int32_t resourceCount;
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
     int32_t length = 0;
@@ -368,8 +367,8 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileRead")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -414,19 +413,18 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileRead")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test list all files.
  */
 U_PORT_TEST_FUNCTION("[cellFile]", "cellFileListAll")
 {
-    int32_t heapUsed;
+    int32_t resourceCount;
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
     bool found;
@@ -439,8 +437,8 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileListAll")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -491,19 +489,18 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileListAll")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test list all files, re-entrant version.
  */
 U_PORT_TEST_FUNCTION("[cellFile]", "cellFileListAllReentrant")
 {
-    int32_t heapUsed;
+    int32_t resourceCount;
     uDeviceHandle_t cellHandle;
     int32_t result = U_CELL_FILE_TEST_REENTRANT_STRING_SIZE;
     // Enough room for the test file name plus a single number
@@ -522,8 +519,8 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileListAllReentrant")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -533,7 +530,7 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileListAllReentrant")
     // Write the files we need to list
     for (size_t x = 0; (x < U_CELL_FILE_TEST_REENTRANT_NUM) &&
          (result == U_CELL_FILE_TEST_REENTRANT_STRING_SIZE); x++) {
-        snprintf(buffer, sizeof(buffer), "%s%1d", U_CELL_FILE_TEST_FILE_NAME, x);
+        snprintf(buffer, sizeof(buffer), "%s%1d", U_CELL_FILE_TEST_FILE_NAME, (int) x);
         U_TEST_PRINT_LINE("writing file %s...", buffer);
         result = uCellFileWrite(cellHandle, buffer,
                                 U_CELL_FILE_TEST_REENTRANT_STRING,
@@ -567,7 +564,7 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileListAllReentrant")
 
     // Delete the files again, for tidiness
     for (size_t x = 0; x < U_CELL_FILE_TEST_REENTRANT_NUM; x++) {
-        snprintf(buffer, sizeof(buffer), "%s%1d", U_CELL_FILE_TEST_FILE_NAME, x);
+        snprintf(buffer, sizeof(buffer), "%s%1d", U_CELL_FILE_TEST_FILE_NAME, (int) x);
         U_TEST_PRINT_LINE("deleting file %s...", buffer);
         U_PORT_TEST_ASSERT(uCellFileDelete(cellHandle, buffer) == 0);
     }
@@ -578,19 +575,18 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileListAllReentrant")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test deleting file.
  */
 U_PORT_TEST_FUNCTION("[cellFile]", "cellFileDelete")
 {
-    int32_t heapUsed;
+    int32_t resourceCount;
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
     size_t y = 1;
@@ -598,8 +594,8 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileDelete")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -646,12 +642,11 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileDelete")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Clean-up to be run at the end of this round of tests, just
@@ -660,25 +655,10 @@ U_PORT_TEST_FUNCTION("[cellFile]", "cellFileDelete")
  */
 U_PORT_TEST_FUNCTION("[cellFile]", "cellFileCleanUp")
 {
-    int32_t x;
-
     uCellTestPrivateCleanup(&gHandles);
-
-    x = uPortTaskStackMinFree(NULL);
-    if (x != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d"
-                          " byte(s) free at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-    x = uPortGetHeapMinFree();
-    if (x >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free at the"
-                          " end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 #endif // #ifdef U_CFG_TEST_CELL_MODULE_TYPE

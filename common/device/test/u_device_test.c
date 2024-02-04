@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@
  * @brief Tests for the device API(s).
  */
 
-
 #ifdef U_CFG_OVERRIDE
 # include "u_cfg_override.h" // For a customer's configuration override
 #endif
@@ -47,6 +46,8 @@
 #include "u_port_os.h"
 #include "u_port_uart.h"
 #include "u_port_event_queue.h"
+
+#include "u_test_util_resource_check.h"
 
 #include "u_interface.h"
 #include "u_device_serial.h"
@@ -94,6 +95,12 @@ typedef struct {
     int32_t pinRx;
     int32_t pinCts;
     int32_t pinRts;
+    const char *pPrefix;
+    // These only so that we can re-use the uPortUartEventCallback via
+    // trampoline()
+    struct uDeviceSerial_t *pDeviceSerial;
+    void (*pEventCallback)(struct uDeviceSerial_t *pDeviceSerial, uint32_t eventBitMap, void *pParam);
+    void *pEventCallbackParam;
 } uDeviceTestSerialContext_t;
 
 /** Type to hold the stuff that the UART test task needs to know about.
@@ -131,6 +138,9 @@ static const char gSerialTestData[] =  "_____0000:012345678901234567890123456789
 // A buffer to receive serial data into.
 static char gSerialBuffer[U_CFG_TEST_UART_BUFFER_LENGTH_BYTES];
 
+// A place to hook the device.
+static uDeviceSerial_t *gpDeviceSerial = NULL;
+
 #endif
 
 /* ----------------------------------------------------------------
@@ -138,6 +148,23 @@ static char gSerialBuffer[U_CFG_TEST_UART_BUFFER_LENGTH_BYTES];
  * -------------------------------------------------------------- */
 
 #if (U_CFG_TEST_UART_A >= 0) && (U_CFG_TEST_UART_B < 0)
+
+// Trampoline so that the function signature that uPortUartEventCallbackSet()
+// uses (int32_t handle, uint32_t eventBitMap, void *pParam) can be employed
+// with that which serialEventCallbackSet() uses (struct uDeviceSerial_t *pHandle,
+// uint32 eventBitMap, void *pParam).
+static void trampoline(int32_t handle, uint32_t eventBitMap, void *pParam)
+{
+    uDeviceTestSerialContext_t *pContext = (uDeviceTestSerialContext_t *) pParam;
+
+    (void) handle;
+
+    if ((pContext != NULL) && (pContext->pEventCallback != NULL) &&
+        (pContext->pDeviceSerial != NULL)) {
+        pContext->pEventCallback(pContext->pDeviceSerial, eventBitMap,
+                                 pContext->pEventCallbackParam);
+    }
+}
 
 // Callback that is called when data arrives at the virtual serial device,
 // code taken largely from uartReceivedDataCallback() over in u_port_test.c.
@@ -214,6 +241,9 @@ static int32_t serialOpen(struct uDeviceSerial_t *pDeviceSerial,
     uDeviceTestSerialContext_t *pContext = (uDeviceTestSerialContext_t *)
                                            pUInterfaceContext(pDeviceSerial);
 
+    if (pContext->pPrefix != NULL) {
+        uPortUartPrefix(pContext->pPrefix);
+    }
     pContext->uartHandle = uPortUartOpen(pContext->uart, pContext->baudRate,
                                          pReceiveBuffer, receiveBufferSizeBytes,
                                          pContext->pinTx, pContext->pinRx,
@@ -270,16 +300,22 @@ static int32_t serialEventCallbackSet(struct uDeviceSerial_t *pDeviceSerial,
                                       size_t stackSizeBytes,
                                       int32_t priority)
 {
+    int32_t errorCode;
     uDeviceTestSerialContext_t *pContext = (uDeviceTestSerialContext_t *)
                                            pUInterfaceContext(pDeviceSerial);
-    // Purely for the purpose of testing, we cast our uDeviceSerial_t * in the
-    // callback function into an int32_t so that we can make use of the existing
-    // UART event callback
-    U_ASSERT(sizeof(uDeviceSerial_t *) == sizeof(int32_t));
-    return uPortUartEventCallbackSet(pContext->uartHandle, filter,
-                                     (void (*)(int32_t, uint32_t, void *)) pFunction,
-                                     pParam, stackSizeBytes,
-                                     priority);
+
+    pContext->pEventCallback = pFunction;
+    pContext->pEventCallbackParam = pParam;
+    errorCode = uPortUartEventCallbackSet(pContext->uartHandle, filter,
+                                          trampoline, pContext, stackSizeBytes,
+                                          priority);
+    if (errorCode != 0) {
+        // Tidy up on error
+        pContext->pEventCallback = NULL;
+        pContext->pEventCallbackParam = NULL;
+    }
+
+    return errorCode;
 }
 
 // Remove a serial event callback.
@@ -288,6 +324,8 @@ static void serialEventCallbackRemove(struct uDeviceSerial_t *pDeviceSerial)
     uDeviceTestSerialContext_t *pContext = (uDeviceTestSerialContext_t *)
                                            pUInterfaceContext(pDeviceSerial);
     uPortUartEventCallbackRemove(pContext->uartHandle);
+    pContext->pEventCallback = NULL;
+    pContext->pEventCallbackParam = NULL;
 }
 
 // Change the serial event callback filter bit-mask.
@@ -321,6 +359,10 @@ static void interfaceSerialInit(struct uDeviceSerial_t *pDeviceSerial)
     pContext->pinRx = U_CFG_TEST_PIN_UART_A_RXD;
     pContext->pinCts = U_CFG_TEST_PIN_UART_A_CTS;
     pContext->pinRts = U_CFG_TEST_PIN_UART_A_RTS;
+    pContext->pPrefix = NULL;
+    pContext->pDeviceSerial = pDeviceSerial;
+    pContext->pEventCallback = NULL;
+    pContext->pEventCallbackParam = NULL;
 }
 
 #endif
@@ -333,8 +375,7 @@ static void interfaceSerialInit(struct uDeviceSerial_t *pDeviceSerial)
 
 U_PORT_TEST_FUNCTION("[device]", "deviceSerial")
 {
-    int32_t heapUsed;
-    uDeviceSerial_t *pDeviceSerial;
+    int32_t resourceCount;
     uDeviceTestSerialCallbackData_t serialCallbackData = {0};
     int32_t bytesToSend;
     int32_t bytesSent = 0;
@@ -346,7 +387,7 @@ U_PORT_TEST_FUNCTION("[device]", "deviceSerial")
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_TEST_PRINT_LINE("testing virtual serial device.");
 
@@ -356,24 +397,24 @@ U_PORT_TEST_FUNCTION("[device]", "deviceSerial")
     // with functions which just call the real uPortUartXxx()
     // functions, and context data necessary to make those
     // functions work.
-    pDeviceSerial = pUDeviceSerialCreate(interfaceSerialInit,
-                                         sizeof(uDeviceTestSerialContext_t));
-    U_PORT_TEST_ASSERT(pDeviceSerial != NULL);
+    gpDeviceSerial = pUDeviceSerialCreate(interfaceSerialInit,
+                                          sizeof(uDeviceTestSerialContext_t));
+    U_PORT_TEST_ASSERT(gpDeviceSerial != NULL);
 
-    serialCallbackData.pDeviceSerial = pDeviceSerial;
+    serialCallbackData.pDeviceSerial = gpDeviceSerial;
 
     // Now run a UART test over the "virtual" serial device
     U_TEST_PRINT_LINE("running virtual serial using real UART...");
-    U_PORT_TEST_ASSERT(pDeviceSerial->open(pDeviceSerial, NULL,
-                                           U_CFG_TEST_UART_BUFFER_LENGTH_BYTES) == 0);
+    U_PORT_TEST_ASSERT(gpDeviceSerial->open(gpDeviceSerial, NULL,
+                                            U_CFG_TEST_UART_BUFFER_LENGTH_BYTES) == 0);
 
     // Set our event callback and filter
-    U_PORT_TEST_ASSERT(pDeviceSerial->eventCallbackSet(pDeviceSerial,
-                                                       (uint32_t) U_DEVICE_SERIAL_EVENT_BITMASK_DATA_RECEIVED,
-                                                       serialCallback,
-                                                       (void *) &serialCallbackData,
-                                                       U_PORT_EVENT_QUEUE_MIN_TASK_STACK_SIZE_BYTES,
-                                                       U_CFG_OS_APP_TASK_PRIORITY + 1) == 0);
+    U_PORT_TEST_ASSERT(gpDeviceSerial->eventCallbackSet(gpDeviceSerial,
+                                                        (uint32_t) U_DEVICE_SERIAL_EVENT_BITMASK_DATA_RECEIVED,
+                                                        serialCallback,
+                                                        (void *) &serialCallbackData,
+                                                        U_PORT_EVENT_QUEUE_MIN_TASK_STACK_SIZE_BYTES,
+                                                        U_CFG_OS_APP_TASK_PRIORITY + 1) == 0);
 
     // From here on is basically a copy of the latter half of
     // runUartTest() over in u_port_test.c
@@ -385,9 +426,9 @@ U_PORT_TEST_FUNCTION("[device]", "deviceSerial")
         if (bytesToSend > U_DEVICE_TEST_SERIAL_SEND_SIZE_BYTES - bytesSent) {
             bytesToSend = U_DEVICE_TEST_SERIAL_SEND_SIZE_BYTES - bytesSent;
         }
-        U_PORT_TEST_ASSERT(pDeviceSerial->write(pDeviceSerial,
-                                                gSerialTestData,
-                                                bytesToSend) == bytesToSend);
+        U_PORT_TEST_ASSERT(gpDeviceSerial->write(gpDeviceSerial,
+                                                 gSerialTestData,
+                                                 bytesToSend) == bytesToSend);
         bytesSent += bytesToSend;
         U_TEST_PRINT_LINE("%d byte(s) sent.", bytesSent);
         uPortTaskBlock(U_CFG_OS_YIELD_MS);
@@ -417,19 +458,34 @@ U_PORT_TEST_FUNCTION("[device]", "deviceSerial")
     U_PORT_TEST_ASSERT(serialCallbackData.bytesReceived == bytesSent);
 
     // Close the serial device
-    pDeviceSerial->close(pDeviceSerial);
+    gpDeviceSerial->close(gpDeviceSerial);
 
     // Delete the serial device instance
-    uDeviceSerialDelete(pDeviceSerial);
+    uDeviceSerialDelete(gpDeviceSerial);
+    gpDeviceSerial = NULL;
 
     uPortDeinit();
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT((heapUsed == 0) || (heapUsed == (int32_t)U_ERROR_COMMON_NOT_SUPPORTED));
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
+}
+
+/** Clean-up to be run at the end of this round of tests, just
+ * in case there were test failures which would have resulted
+ * in the deinitialisation being skipped.
+ */
+U_PORT_TEST_FUNCTION("[device]", "deviceSerialCleanup")
+{
+    if (gpDeviceSerial != NULL) {
+        gpDeviceSerial->close(gpDeviceSerial);
+        uDeviceSerialDelete(gpDeviceSerial);
+    }
+    uPortDeinit();
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 #endif

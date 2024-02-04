@@ -2,7 +2,7 @@
 This is intended as key/concise advice to those active in developing `ubxlib` and is placed here so that it cannot be missed.
 
 # All That Matters
-`ubxlib` exists so that u-blox is able to sell more modules into more applications, by making it easier for a customer to integrate with current and future u-blox modules; that's it.  `ubxlib` has no meaning/value of itself, it is solely a means to that end.  Think that way and you will behave in the right way.
+`ubxlib` exists to facilitate the use of u-blox modules at source-code level, by making it easier for a customer to integrate with current and future u-blox modules; that's it. `ubxlib` has no meaning/value of itself, it is solely a means to that end. Think that way and you will behave in the right way.
 
 # Be The Tail
 There is a phrase in English "the tail wagging the dog", used to describe situations where something less important has ended up controlling something rather more important.  `ubxlib` is the tail: a driver for just one or two components in a customers application, it should bend/flex to whatever the customers' application requires, it should NOT place requirements on or limit the customers' application if at all possible.  Examples include:
@@ -43,3 +43,28 @@ Similar to commenting, it is easy when writing a commit message to forget that o
 Then, in the body of the commit message don't be afraid to say why, in a verbose/readable way, the change is justified; these commit messages are publicly visible and the only change documentation we have so put your back into it.  Note that, for a single commit, a `squash` merge in Github gives you the opportunity to refine/re-word the commit message at the last minute when merging your approved PR.
 
 A corollary of this is that you should try not to combine disparate changes into a single commit; discrete commits are easier for the customer to absorb.
+
+# Do Not Get Fat
+Every line of `ubxlib` core code (i.e. ignoring test code) carries a cost for us and for the customer: for the customer it takes precious space in their MCU's memory and for us it increases test time.  Code that improves thread-safety, code that makes a `ubxlib` API easier to use and code which forms a feature that a customer has _requested_, is fine, but don't add code without being _sure_ it is worth it.  Conversely, remove code when you can: deprecate and then remove things that are either no longer supported in the module or that you believe no one is using, despite seeming like a good idea at the time \[a customer can object that they are using the thing in the deprecation period, so do make the deprecation notices clear\].  This especially applies to common code, which cannot be excluded like `cell`, `gnss`, `wifi` and `ble` code can.
+
+Adding code is putting on weight: make sure it is muscle and not fat.
+
+# Be Careful What You Expose
+Only functions/types/#defines that a customer is intended to use should be exposed through the `api` directory.  Anything exposed through the `api` directory must be treated with great care, must only be extended, not broken, etc.
+
+If there are things that another bit of `ubxlib` needs, expose them through a header file named something like `xxx_shared.h` (e.g. [u_geofence_shared.h](/common/geofence/src/u_geofence_shared.h)) and place that header file in the `src` directory, NOT in the `api` directory; the `src` directory is included in the header file search path so the `ubxlib` code will find it but, since only header files from the `api` directory are included in `ubxlib.h`, the customer's code will NOT end up including it by accident.  This gives you freedom to change the functions/types/#defines of that file in future.
+
+Similarly, if there are things that another bit of your own code needs, within the same module, expose that through a header file named `xxx_private.h`, again kept in the `src` directory; no other module of `ubxlib` should include an `xxx_private.h` header file from another module, unless there is a very good reason indeed.  See [common/network/src](/common/network/src) for examples of all of these.
+
+# Keep The Change History Of `master` Clean/Linear
+Since the commit messages are our only change documentation, and since Github is not very good at displaying a commit history with merge-commits, it is best, if at all possible, to avoid them and keep a linear commit history on `master`.  This means:
+
+- when merging a PR, try to stick to squash-merges or rebase-merges, rather than plain-old merges of a branch,
+- if a customer makes a PR to the public `ubxlib` repo, bring it in as follows:
+  - make sure that the customer PR is a single commit (ask them to squash it and re-push if it is not),
+  - pull the PR into a branch of `ubxlib_priv` so that you can throw it at the test system to prove that it is all good,
+  - make sure that `ubxlib` `master` is up to date with `ubxlib_priv` `master` (i.e. push `ubxlib_priv` `master` to `ubxlib` `master`, which should always be possible, see above),
+  - do a rebase-merge of the customer PR into `ubxlib` `master` (i.e. directly, not going via `ubxlib_priv`),
+  - pull `ubxlib` `master` back into `ubxlib_priv` `master` (i.e. with the latest `ubxlib_priv` `master` on your machine, pull `ubxlib` `master` and then push that to `ubxlib_priv` `master`).
+  
+The only exception to the above is when there has been active work on the `ubxlib_priv` `development` branch and that is ready to be brought into `master`: this should be brought into `ubxlib_priv` `master` through a normal (i.e. non-rebase, non-squash) merge since it will likely be a _very_ large commit of disparate things that will not be describable when in one big blob.

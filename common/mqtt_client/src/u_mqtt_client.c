@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,8 +53,8 @@
 
 #include "u_device_shared.h"
 
-#include "u_port_heap.h"
 #include "u_port_os.h"
+#include "u_port_heap.h"
 
 #include "u_mqtt_common.h"
 #include "u_mqtt_client.h"
@@ -86,10 +86,10 @@ static uErrorCode_t gLastOpenError = U_ERROR_COMMON_SUCCESS;
 /** Start an MQTT connection using cellular.
  * The mutex for this session must be locked before this is called.
  */
-int32_t cellConnect(uDeviceHandle_t devHandle,
-                    const uMqttClientConnection_t *pConnection,
-                    const uSecurityTlsContext_t *pSecurityContext,
-                    bool doNotConnect)
+static int32_t cellConnect(uDeviceHandle_t devHandle,
+                           const uMqttClientConnection_t *pConnection,
+                           const uSecurityTlsContext_t *pSecurityContext,
+                           bool doNotConnect)
 {
     int32_t errorCode;
     const uMqttWill_t *pWill = pConnection->pWill;
@@ -468,7 +468,9 @@ int32_t uMqttClientPublish(uMqttClientContext_t *pContext,
     int32_t errorCode = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
 
     if ((pContext != NULL) && (pTopicNameStr != NULL) &&
-        (pMessage != NULL) && (messageSizeBytes > 0)) {
+        // If retain is true an empty message sent to the broker means
+        // "clear the single allowed retained message from the topic"
+        (retain || ((pMessage != NULL) && (messageSizeBytes > 0)))) {
         errorCode = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
 
         U_PORT_MUTEX_LOCK((uPortMutexHandle_t) (pContext->mutexHandle));
@@ -755,7 +757,9 @@ int32_t uMqttClientSnPublish(uMqttClientContext_t *pContext,
     int32_t errorCode = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
 
     if ((pContext != NULL) && (pTopicName != NULL) &&
-        (pMessage != NULL) && (messageSizeBytes > 0)) {
+        // If retain is true an empty message sent to the broker means
+        // "clear the single allowed retained message from the topic"
+        (retain || ((pMessage != NULL) && (messageSizeBytes > 0)))) {
         errorCode = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
 
         U_PORT_MUTEX_LOCK((uPortMutexHandle_t) (pContext->mutexHandle));

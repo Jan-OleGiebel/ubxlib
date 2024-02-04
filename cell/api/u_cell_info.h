@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -93,7 +93,8 @@ int32_t uCellInfoGetRssiDbm(uDeviceHandle_t cellHandle);
 /** Get the RSRP that pertained after the last call to
  * uCellInfoRefreshRadioParameters().  Note that RSRP may not
  * be available unless the module has successfully registered
- * with the cellular network.
+ * with the cellular network.  Also note that LENA-R8 does
+ * not support reading RSRP.
  *
  * @param cellHandle  the handle of the cellular instance.
  * @return            the RSRP in dBm, or zero if no RSRP
@@ -105,7 +106,8 @@ int32_t uCellInfoGetRsrpDbm(uDeviceHandle_t cellHandle);
 /** Get the RSRQ that pertained after the last call to
  * uCellInfoRefreshRadioParameters().  Note that RSRQ may not be
  * available unless the module has successfully registered with the
- * cellular network.
+ * cellular network.  Also note that LENA-R8 does not support
+ * reading RSRQ.
  *
  * @param cellHandle  the handle of the cellular instance.
  * @return            the RSRQ in dB, or 0x7FFFFFFF if no RSRQ
@@ -154,8 +156,14 @@ int32_t uCellInfoGetRxQual(uDeviceHandle_t cellHandle);
 int32_t uCellInfoGetSnrDb(uDeviceHandle_t cellHandle,
                           int32_t *pSnrDb);
 
-/** Get the cell ID that pertained after the last call to
- * uCellInfoRefreshRadioParameters().
+/** \deprecated Get the cell ID that pertained after the
+ * last call to uCellInfoRefreshRadioParameters().  When on
+ * a 2G or 3G RAT the logical cell ID will be returned, else
+ * the physical cell ID will be returned.
+ *
+ * This function is deprecated and may be removed at some
+ * point in the future; please use uCellInfoGetCellIdLogical()
+ * or uCellInfoGetCellIdPhysical() instead.
  *
  * @param cellHandle  the handle of the cellular instance.
  * @return            the cell ID, or negative error code on
@@ -163,8 +171,31 @@ int32_t uCellInfoGetSnrDb(uDeviceHandle_t cellHandle,
  */
 int32_t uCellInfoGetCellId(uDeviceHandle_t cellHandle);
 
+/** Get the logical cell ID; since the logical cell ID is emitted
+ * by the module whenever it changes cell, this does not require
+ * uCellInfoRefreshRadioParameters() to have been issued.
+ *
+ * @param cellHandle  the handle of the cellular instance.
+ * @return            the logical cell ID, or negative error
+ *                    code on failure.
+ */
+int32_t uCellInfoGetCellIdLogical(uDeviceHandle_t cellHandle);
+
+/** Get the physical cell ID that pertained after the last
+ * call to uCellInfoRefreshRadioParameters(); only relevant
+ * for LTE networks and really does require
+ * uCellInfoRefreshRadioParameters() to have been issued.
+ * Note that LENA-R8 does not support reading the physical cell ID.
+ *
+ * @param cellHandle  the handle of the cellular instance.
+ * @return            the physical cell ID, or negative error
+ *                    code on failure.
+ */
+int32_t uCellInfoGetCellIdPhysical(uDeviceHandle_t cellHandle);
+
 /** Get the EARFCN that pertained after the last call to
- * uCellInfoRefreshRadioParameters().
+ * uCellInfoRefreshRadioParameters(). Note that LENA-R8 does
+ * not support reading the EARFCN.
  *
  * @param cellHandle  the handle of the cellular instance.
  * @return            the EARFCN, or -1 if the module is not
@@ -280,7 +311,21 @@ int32_t uCellInfoGetFirmwareVersionStr(uDeviceHandle_t cellHandle,
 
 /** Get the UTC time according to cellular.  This feature requires
  * a connection to have been activated and support for this feature
- * is optional in the cellular network.
+ * is optional in the cellular network.  To get the local time instead
+ * of UTC time, use uCellInfoGetTime().
+ *
+ * Should the cellular network not provide time, you may set it
+ * yourself with uCellCfgSetTime().
+ *
+ * Note: the date emitted by the cellular module has a two-digit year
+ * and, if the network does not provide the time, a service sometimes
+ * called NITZ, Network Information and TimeZone (e.g. Telefonica in
+ * the UK does not), the year may appear as, for instance, "80" (meaning
+ * 1980) or maybe "15" (meaning 2015).  This code can only assume that
+ * "80" means 2080, hence a large number will be returned, and of course
+ * 2015 is in the past; you may wish to range-check the value returned by
+ * this function to guard against assuming the wrong time when operating
+ * on such networks.
  *
  * @param cellHandle  the handle of the cellular instance.
  * @return            on success the Unix UTC time, else negative
@@ -307,6 +352,37 @@ int64_t uCellInfoGetTimeUtc(uDeviceHandle_t cellHandle);
  */
 int32_t uCellInfoGetTimeUtcStr(uDeviceHandle_t cellHandle,
                                char *pStr, size_t size);
+
+/** Get the local time according to cellular, plus optionally the
+ * time-zone offset of that time.  This feature requires a connection
+ * to have been activated and support for this feature is optional
+ * in the cellular network.
+ *
+ * Should the cellular network not provide time, you may set it
+ * yourself with uCellCfgSetTime().
+ *
+ * Note: the date emitted by the cellular module has a two-digit year
+ * and, if the network does not provide the time, a service sometimes
+ * called NITZ, Network Information and TimeZone (e.g. Telefonica in
+ * the UK does not), the year may appear as, for instance, "80" (meaning
+ * 1980) or maybe "15" (meaning 2015).  This code can only assume that
+ * "80" means 2080, hence a large number will be returned, and of course
+ * 2015 is in the past; you may wish to range-check the value returned by
+ * this function to guard against assuming the wrong time when operating
+ * on such networks.
+ *
+ * @param cellHandle             the handle of the cellular
+ *                               instance.
+ * @param[in] pTimeZoneSeconds   a place to put the time-zone
+ *                               offset in seconds; may be NULL.
+ * @return                       on success the local time in
+ *                               seconds since midnight on 1st
+ *                               Jan 1970 (Unix time but local
+ *                               instead of UTC) else
+ *                               negative error code.
+ */
+int64_t uCellInfoGetTime(uDeviceHandle_t cellHandle,
+                         int32_t *pTimeZoneSeconds);
 
 /** Determine if RTS flow control, the signal from the
  * cellular module to this software that the module is

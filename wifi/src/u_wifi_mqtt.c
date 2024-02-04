@@ -1,6 +1,6 @@
 
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,10 +45,10 @@
                                               files if any print or scan function
                                               is used. */
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_debug.h"
 #include "u_port_event_queue.h"
-#include "u_port_os.h"
 
 #include "u_at_client.h"
 
@@ -65,8 +65,17 @@
 /* ----------------------------------------------------------------
  * COMPILE-TIME MACROS
  * ------------------------------------------------------------- */
-#define U_WIFI_MQTT_DATA_EVENT_STACK_SIZE 1536
-#define U_WIFI_MQTT_DATA_EVENT_PRIORITY (U_CFG_OS_PRIORITY_MAX - 5)
+
+#ifndef U_WIFI_MQTT_DATA_EVENT_STACK_SIZE
+/* The stack size for the event queue task, limiting factor being
+ * ESP32 when it has been pre-built for use with PlatformIO.
+ */
+# define U_WIFI_MQTT_DATA_EVENT_STACK_SIZE 1600
+#endif
+
+#ifndef U_WIFI_MQTT_DATA_EVENT_PRIORITY
+# define U_WIFI_MQTT_DATA_EVENT_PRIORITY (U_CFG_OS_PRIORITY_MAX - 5)
+#endif
 
 typedef struct uWifiMqttTopic_t {
     char *pTopicStr;
@@ -547,7 +556,6 @@ static void edmMqttDataCallback(int32_t edmHandle, int32_t edmChannel,
     U_PORT_MUTEX_UNLOCK(gMqttSessionMutex);
 }
 
-
 static void edmIpConnectionCallback(int32_t edmHandle,
                                     int32_t edmChannel,
                                     uShortRangeConnectionEventType_t eventType,
@@ -611,13 +619,11 @@ static void atMqttConnectionCallback(uDeviceHandle_t devHandle,
                         // Report to user that we are disconnected
                         if (pMqttSession->pDisconnectCb) {
                             //lint -save -e785
-                            uCallbackEvent_t event = {
-                                .pDataCb = NULL,
-                                .pDisconnectCb = pMqttSession->pDisconnectCb,
-                                .pCbParam = pMqttSession->pCbParam,
-                                .pMqttSession = pMqttSession,
-                                .disconnStatus = (int32_t)U_ERROR_COMMON_SUCCESS
-                            };
+                            uCallbackEvent_t event = {0}; // Constructed this way to keep Valgrind happy
+                            event.pDisconnectCb = pMqttSession->pDisconnectCb;
+                            event.pCbParam = pMqttSession->pCbParam;
+                            event.pMqttSession = pMqttSession;
+                            event.disconnStatus = (int32_t)U_ERROR_COMMON_SUCCESS;
                             //lint -restore
                             uPortEventQueueSend(gCallbackQueue, &event, sizeof(event));
                         }
@@ -1129,7 +1135,6 @@ int32_t uWifiMqttUnsubscribe(const uMqttClientContext_t *pContext,
     uShortRangePrivateInstance_t *pInstance;
     int32_t err = (int32_t)U_ERROR_COMMON_INVALID_PARAMETER;
 
-
     if (uShortRangeLock() == (int32_t)U_ERROR_COMMON_SUCCESS) {
 
         // Check WiFi SHO handle and MQTT session exists
@@ -1165,7 +1170,6 @@ int32_t uWifiMqttDisconnect(const uMqttClientContext_t *pContext)
 
     isMqttConnected = uWifiMqttIsConnected(pContext);
 
-
     if (uShortRangeLock() == (int32_t)U_ERROR_COMMON_SUCCESS) {
 
         // Check WiFi SHO handle and MQTT session exists
@@ -1190,7 +1194,6 @@ void uWifiMqttClose(uMqttClientContext_t *pContext)
     bool isMqttConnected;
 
     isMqttConnected = uWifiMqttIsConnected(pContext);
-
 
     if (uShortRangeLock() == (int32_t)U_ERROR_COMMON_SUCCESS) {
 

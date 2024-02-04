@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,14 +29,21 @@
 #include "u_cfg_os_platform_specific.h"
 #include "u_error_common.h"
 #include "u_port.h"
-#include "u_port_heap.h"
 #include "u_port_os.h"
+#include "u_port_heap.h"
 #include "u_port_event_queue.h"
 
-#include "kernel.h"
-#include "device.h"
-#include "drivers/gpio.h"
-#include "version.h"
+#include <version.h>
+
+#if KERNEL_VERSION_NUMBER >= ZEPHYR_VERSION(3,1,0)
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
+#else
+#include <kernel.h>
+#include <device.h>
+#include <drivers/gpio.h>
+#endif
 
 #include "u_port_private.h"  // Down here because it needs to know about the Zephyr device tree
 
@@ -288,11 +295,11 @@ int32_t uPortPrivateGetGpioPort(const struct device *pGpioDevice,
             portNumber = 1;
         }
 #else
-        if ((pGpioDevice == DEVICE_DT_GET_OR_NULL(DT_NODELABEL(gpio0))) ||
-            (pGpioDevice == DEVICE_DT_GET_OR_NULL(DT_NODELABEL(porta)))) {
+        if ((pGpioDevice == U_DEVICE_DT_GET_OR_NULL(gpio0)) ||
+            (pGpioDevice == U_DEVICE_DT_GET_OR_NULL(porta))) {
             portNumber = 0;
-        } else if ((pGpioDevice == DEVICE_DT_GET_OR_NULL(DT_NODELABEL(gpio1))) ||
-                   (pGpioDevice == DEVICE_DT_GET_OR_NULL(DT_NODELABEL(portb)))) {
+        } else if ((pGpioDevice == U_DEVICE_DT_GET_OR_NULL(gpio1)) ||
+                   (pGpioDevice == U_DEVICE_DT_GET_OR_NULL(portb))) {
             portNumber = 1;
         }
 #endif
@@ -327,14 +334,14 @@ const struct device *pUPortPrivateGetGpioDevice(int32_t pin)
     }
 #else
     if (portNo == 0) {
-        pDev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(gpio0));
+        pDev = U_DEVICE_DT_GET_OR_NULL(gpio0);
         if (!pDev) {
-            pDev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(porta));
+            pDev = U_DEVICE_DT_GET_OR_NULL(porta);
         }
     } else if (portNo == 1) {
-        pDev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(gpio1));
+        pDev = U_DEVICE_DT_GET_OR_NULL(gpio1);
         if (!pDev) {
-            pDev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(portb));
+            pDev = U_DEVICE_DT_GET_OR_NULL(portb);
         }
     }
 #endif
@@ -471,6 +478,5 @@ int32_t uPortPrivateTimerChange(const uPortTimerHandle_t handle,
 
     return errorCode;
 }
-
 
 // End of file

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,6 +46,12 @@
  * irrespective of whether cellular is used there.
  */
 
+/* NOTE TO MAINTAINERS: if you change this structure you will
+ * need to change u-blox,ubxlib-network-cellular.yaml over in
+ * /port/platform/zephyr/dts/bindings to match and you may also
+ * need to change the code in the Zephyr u_port_board_cfg.c file
+ * that parses the values.
+ */
 /** The network configuration for cellular.
  */
 typedef struct {
@@ -77,6 +83,27 @@ typedef struct {
                                                        the field to zero, and
                                                        timeoutSeconds will be
                                                        obeyed instead. */
+    const char *pUsername; /** ONLY REQUIRED if you must use a user name
+                               and password with the APN provided to you
+                               by your service provider; let your compiler
+                               initialise this to zero otherwise. */
+    const char *pPassword; /** ONLY REQUIRED if you must use a user name
+                               and password with the APN provided to you
+                               by your service provider; let your compiler
+                               initialise this to zero otherwise. */
+    int32_t authenticationMode; /** ONLY REQUIRED if you must give a user name
+                                    and password with the APN provided to
+                                    you by your service provider and your
+                                    cellular module does NOT support figuring
+                                    out the authentication mode automatically;
+                                    there is no harm in populating this field
+                                    even if your module _does_ support figuring
+                                    out the authentication mode automatically. */
+    const char *pMccMnc; /** ONLY REQUIRED if you wish to connect to a specific
+                             MCC/MNC rather than to the best available network;
+                             should point to the null-terminated string giving
+                             the MCC and MNC of the PLMN to use (for example
+                             "23410"). */
     /* This is the end of version 0 of this
        structure: should any fields be added to
        this structure in future they must be

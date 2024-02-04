@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@
  * @brief Test for the mempool API
  */
 
-
 #ifdef U_CFG_OVERRIDE
 # include "u_cfg_override.h" // For a customer's configuration override
 #endif
@@ -39,15 +38,16 @@
 #include "u_cfg_sw.h"
 #include "u_cfg_app_platform_specific.h"
 #include "u_cfg_test_platform_specific.h"
-#include "u_cfg_os_platform_specific.h"  // For #define U_CFG_OS_CLIB_LEAKS
+#include "u_cfg_os_platform_specific.h"
 
 #include "u_error_common.h"
 
 #include "u_port_clib_platform_specific.h" /* struct timeval in some cases. */
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"
+#include "u_test_util_resource_check.h"
 #include "u_mempool.h"
 #include "u_short_range_pbuf.h"
 #include "u_short_range_edm.h" // For U_SHORT_RANGE_EDM_BLK_SIZE
@@ -75,6 +75,7 @@
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
  * -------------------------------------------------------------- */
+
 static int32_t generatePayLoad(uShortRangePbuf_t **ppBuf)
 {
     int32_t errorCode;
@@ -83,22 +84,24 @@ static int32_t generatePayLoad(uShortRangePbuf_t **ppBuf)
 
     if (errorCode > 0) {
         for (int i = 0; i < errorCode; i++) {
-            (*ppBuf)->data[i] = rand() % 128;
+            (*ppBuf)->data[i] = (char) (rand() % 128);
             (*ppBuf)->length++;
         }
     }
     return errorCode;
 }
+
 /* ----------------------------------------------------------------
  * PUBLIC FUNCTIONS: TESTS
  * -------------------------------------------------------------- */
+
 U_PORT_TEST_FUNCTION("[pbuf]", "pbufInsertPayload")
 {
     int32_t errCode;
     uShortRangePbufList_t *pPbufList;
     int32_t numOfBlks = 8;
     uShortRangePbuf_t *pBuf;
-    int32_t heapUsed;
+    int32_t resourceCount;
     char *pBuffer2;
     char *pBuffer3;
     size_t copiedLen = 0;
@@ -112,7 +115,7 @@ U_PORT_TEST_FUNCTION("[pbuf]", "pbufInsertPayload")
     // correct initial heap size
     uPortDeinit();
     rand();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     errCode = uShortRangeMemPoolInit();
     U_PORT_TEST_ASSERT(errCode == (int32_t)U_ERROR_COMMON_SUCCESS);
@@ -149,12 +152,11 @@ U_PORT_TEST_FUNCTION("[pbuf]", "pbufInsertPayload")
     uPortFree(pBuffer2);
     uPortFree(pBuffer3);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT((heapUsed == 0) || (heapUsed == (int32_t)U_ERROR_COMMON_NOT_SUPPORTED));
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 U_PORT_TEST_FUNCTION("[pbuf]", "pbufPktList")
@@ -165,7 +167,7 @@ U_PORT_TEST_FUNCTION("[pbuf]", "pbufPktList")
     uShortRangePktList_t pktList;
     int32_t numOfBlks = 8;
     uShortRangePbuf_t *pBuf;
-    int32_t heapUsed;
+    int32_t resourceCount;
     char *pBuffer1;
     char *pBuffer2;
     char *pBuffer3;
@@ -180,7 +182,7 @@ U_PORT_TEST_FUNCTION("[pbuf]", "pbufPktList")
     uPortDeinit();
 
     rand();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     errCode = uShortRangeMemPoolInit();
     U_PORT_TEST_ASSERT(errCode == (int32_t)U_ERROR_COMMON_SUCCESS);
@@ -255,12 +257,11 @@ U_PORT_TEST_FUNCTION("[pbuf]", "pbufPktList")
     uPortFree(pBuffer2);
     uPortFree(pBuffer3);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT((heapUsed == 0) || (heapUsed == (int32_t)U_ERROR_COMMON_NOT_SUPPORTED));
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 // End of file

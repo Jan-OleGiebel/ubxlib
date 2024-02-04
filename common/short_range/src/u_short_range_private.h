@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,11 @@
 #include "u_http_client.h"
 #include "u_wifi_http.h"
 
+#ifdef U_UCONNECT_GEN2
+# include "u_cx_at_client.h"
+# include "u_cx_general.h"
+#endif
+
 /** @file
  * @brief This header file defines types, functions and inclusions that
  * are common and private to the short range API.
@@ -38,6 +43,14 @@ extern "C" {
 /* ----------------------------------------------------------------
  * COMPILE-TIME MACROS
  * -------------------------------------------------------------- */
+
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
+
+#ifndef MAX
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#endif
 
 #define U_SHORT_RANGE_UUDPC_TYPE_BT 1
 #define U_SHORT_RANGE_UUDPC_TYPE_IPv4 2
@@ -110,6 +123,13 @@ typedef struct uShortRangePrivateConnection_t {
     uShortRangeConnectionType_t type;
 } uShortRangePrivateConnection_t;
 
+#ifdef U_UCONNECT_GEN2
+typedef struct {
+    uCxAtClient_t uCxAtClient;
+    uCxHandle_t uCxHandle;
+} uShortRangeUCxContext_t;
+#endif
+
 /** Definition of a ShortRange instance.
  */
 //lint -esym(768, uShortRangePrivateInstance_t::pSpsConnectionCallback) Suppress not reference, it is
@@ -154,7 +174,16 @@ typedef struct uShortRangePrivateInstance_t {
     void *pBtDataCallbackParameter;
     uHttpClientContext_t *pHttpContext;
     uWifiHttpCallback_t *pWifiHttpCallBack;
+    uPortMutexHandle_t locMutex;
+    volatile void *pLocContext;
+    void *pFenceContext; /**< Storage for a uGeofenceContext_t. */
     struct uShortRangePrivateInstance_t *pNext;
+#ifdef U_UCONNECT_GEN2
+    uShortRangeUCxContext_t *pUcxContext;
+    volatile uint32_t wifiState;
+    void *pMqttContext;
+    void *pBleContext;
+#endif
 } uShortRangePrivateInstance_t;
 
 /* ----------------------------------------------------------------
@@ -181,6 +210,19 @@ extern uPortMutexHandle_t gUShortRangePrivateMutex;
 /* ----------------------------------------------------------------
  * FUNCTIONS
  * -------------------------------------------------------------- */
+
+#ifdef U_UCONNECT_GEN2
+
+/** Get the uCx handle for a short range device.
+ *
+ * @param   devHandle  the short range device handle.
+ * @return  a pointer to the instance or NULL if invalid
+ */
+uCxHandle_t *pShortRangePrivateGetUcxHandle(uDeviceHandle_t devHandle);
+
+int32_t uShortrangePrivateRestartDevice(uDeviceHandle_t devHandle, bool storeConfig);
+
+#endif
 
 /** Find a short range instance in the list by instance handle.
  * Note: gUShortRangePrivateMutex should be locked before this is
@@ -216,6 +258,27 @@ bool uShortRangePrivateIsRegistered(const uShortRangePrivateInstance_t *pInstanc
 //lint -esym(759, pUShortRangePrivateGetModule) etc. since use of this function
 //lint -esym(765, pUShortRangePrivateGetModule) may be compiled-out in various ways
 const uShortRangePrivateModule_t *pUShortRangePrivateGetModule(uDeviceHandle_t devHandle);
+
+/** Start a short range server instance id based on the type.
+ *
+ * @param atHandle       the handle of the device AT client.
+ * @param type           type of server to start.
+ * @param[in] pParam     possible parameters for the server, can be NULL.
+ * @return               server id or negative error code on
+ *                       failure.
+ */
+int32_t uShortRangePrivateStartServer(const uAtClientHandle_t atHandle,
+                                      uShortRangeServerType_t type,
+                                      const char *pParam);
+
+/** Stop a previously started short range server instance.
+ *
+ * @param atHandle       the handle of the device AT client.
+ * @param serverId       server instance id.
+ * @return               server id or negative error code on
+ *                       failure.
+ */
+int32_t uShortRangeStopStopServer(const uAtClientHandle_t atHandle, int32_t serverId);
 
 #ifdef __cplusplus
 }

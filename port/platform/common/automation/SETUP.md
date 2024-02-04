@@ -94,8 +94,10 @@ docker build -t jenkins-custom .
 - Execute this docker image with:
 
 ```
-docker run --name jenkins-custom --restart=always --detach --network jenkins --network-alias jenkins-custom --env DOCKER_HOST=tcp://docker:2376 --env DOCKER_CERT_PATH=/certs/client --env DOCKER_TLS_VERIFY=1 --publish 8080:8080 --publish 50000:50000 --volume $HOME/jenkins:/var/jenkins_home --volume jenkins-docker-certs:/certs/client:ro --log-driver=journald jenkins-custom 
+docker run --name jenkins-custom --restart=always --detach --network jenkins --network-alias jenkins-custom --env DOCKER_HOST=tcp://docker:2376 --env DOCKER_CERT_PATH=/certs/client --env DOCKER_TLS_VERIFY=1 --env JAVA_OPTS="-Dhudson.model.DirectoryBrowserSupport.CSP=\"script-src 'unsafe-inline'\"" --publish 8080:8080 --publish 50000:50000 --volume $HOME/jenkins:/var/jenkins_home --volume jenkins-docker-certs:/certs/client:ro --log-driver=journald jenkins-custom 
 ```
+
+- Note: the `JAVA_OPTS="hudson.model.DirectoryBrowserSupport.CSP...` bit allows the CodeChecker nodes to display nice HTML output describing exactly what needs fixing when they raise an issue.  This is not a security problem as we lock down access to Jenkins on a certificate/key basis to known users; keep the miscreants out at the gates.
 
 - Note: you can start a command shell _inside_ this running Docker container (you will need this to read the `initialAdminPassword` in the next step) with:
 
@@ -243,6 +245,13 @@ There are a few global variables and a label to set in Jenkines:
 - Add N `Lockable Resources` named `ubxlib_tokenX` (i.e. the value of `UBXLIB_TOKEN` above with a `0` after it, then another with a `1` after it, etc.), where N is at least as many as there are test instances with HW attached in [DATABASE.md](DATABASE.md), and give them all the label `ubxlib_token`; `Jenkinsfile` and the clean-up script [jenkins_ubxlib_clean_up.txt](scripts/jenkins_ubxlib_clean_up.txt) will lock this label to coordinate their activities.
 - Press `Save`.
 
+## Configure Global Jenkins Build Discarder
+The global Jenkins build discarder has a default "keep" time of 30 days; you may find this is a bit too relaxed for a 32 gigabyte Raspberry Pi SD card, so:
+
+- Select `Manage Jenkins` -> `Configure System` and scroll down to `Global Build Discarders`.
+- Under `Default Build Discarder` set `Days to keep builds` and `Days to keep artifacts` to 7.
+- Press `Save`.
+
 # Jenkins Agents
 Here we configure Jenkins agents that will run all instances.
 
@@ -274,7 +283,7 @@ sudo yum install git java-11-openjdk python3 python3-pip python3-devel gcc
 
 Now follow the [common steps](#configure-a-linux-agent-common-steps) below, setting the number of executors to the number of cores on the agent machine (`lscpu` and then `Core(s) per socket` \* `Socket(s)`) and applying the labels `ubxlib`, `linux`, `x86_64`, `docker`, `build` and `distributor` (all lower case) to the agent.
 
-Note: the labels `build` and `distributor` are added to this agent because it is the first/only one: ultimately you should apply the `build` label to your fast machines that have nothing else important to do (they won't be selected for testing, just building) and the `distributor` label to the machine which runs the initial part of [Jenkinsfile](/port/platform/common/automation/Jenkinsfile), farming the build pipeline out to others (though there's no harm in applying `distributor` to all your beefy agents).
+Note: the labels `build` and `distributor` are added to this agent because it is the first/only one: ultimately you should apply the `build` label to your fast machines that have nothing else important to do (they won't be selected for testing, just building) and the `distributor` label to the machine which runs the initial part of [Jenkinsfile](/port/platform/common/automation/Jenkinsfile), farming the build pipeline out to others (there is no harm in applying `distributor` to all your beefy agents but note that if many jobs that require all agents are queued at once this can lead to the queue locking up, since it might be that all machines which are distributors are stuck doing non-distributor work).
 
 ## Configure First Linux Agent For Testing (Raspbian)
 Note: you don't need one of these initially, you can complete the test system setup using Linux PCs which do building and the checking, then come back here to do the real test stuff.
@@ -285,7 +294,7 @@ For Raspberry Pi, we _could_ use Centos (7, since Centos 8 doesn't seem to be av
 
 - Run `raspi-config` and, under the `Interface Options` menu item, enable SSH and, under the `System Options` menu item, set a sensible host name (e.g. `raspberrypi-100`).
 
-- While you're there, if you happen to have a really noisy Raspberry Pi fan connected, go to `Performance Options` -> `Fan` and switch on fan control with the default settings (GPIO 14 is the pin you would have used if you followed their diagram); if you don't do this it will be like a mosquito in your ear all the time.
+- While you're there, if you happen to have a really noisy Raspberry Pi fan connected, go to `Performance Options` -> `Fan` and switch on fan control with the default settings (GPIO 14 is the pin you would have used if you followed their diagram); if you don't do this it will be like a mosquito in your ear all the time.  Note, however, that if the UART interface of the Raspberry Pi is to be used (e.g. if you're running `ubxlib` on the Raspberry Pi itself and taking to a module over UART), you will need to move the control pin to somewhere else, or switch fan control off entirely if the lid is going to be open, as GPIO14 is the UART TX pin.
 
 - Run `sudo apt update` followed by `sudo apt upgrade` to get everything up to date.
 
@@ -491,12 +500,12 @@ echo Updating ubxlib Docker image on this agent.
 echo Branch will be $UBXLIB_PRIV_REV, folder where the Docker files are found is assumed to be \"$WORKSPACE/ubxlib/$UBXLIB_DOCKER_FOLDER\".
 cd $WORKSPACE/ubxlib/$UBXLIB_DOCKER_FOLDER
 pwd
+# Set exit on error
+set -e
 sudo -E /usr/local/bin/docker-compose build
-if [ $? ]; then
-    if [ -d /home/"$USER"/.docker ]; then
-        sudo chown "$USER":"$USER" /home/"$USER"/.docker -R
-        sudo chmod g+rwx "/home/$USER/.docker" -R
-    fi
+if [ -d /home/"$USER"/.docker ]; then
+    sudo chown "$USER":"$USER" /home/"$USER"/.docker -R
+    sudo chmod g+rwx "/home/$USER/.docker" -R
 fi
 ```
 
@@ -566,6 +575,11 @@ Next `master` will fail because it cannot find the credential with ID `ubxlib_wi
 
 In Jenkins, go to `Manage Jenkins` -> `Manage Credentials`, create a credential of type `Secret text`, paste the passkey for the Wi-Fi network into the `Secret` field, give it the `ID` `ubxlib_wifi_passkey` and a sensible `Description`, e.g. "WiFi passkey for network U_WIFI_TEST_CFG_SSID", then press `Save`.
 
+## Create Wi-Fi Cloud Location Service API Keys In Jenkins
+`master` will also fail because it cannot find the API Keys for the three cloud locations services (Google Maps, Skyhook and Here) that the uWifiLoc test uses.  For these services we use the same API keys as the SHO test team uses; the API key strings can be obtained from them.
+
+In Jenkins, go to `Manage Jenkins` -> `Manage Credentials`, and for each one create a credential of type `Secret text`, paste the API key into the `Secret` field, give them the `ID`s `ubxlib_google_maps_api_key`, `ubxlib_skyhook_api_key` and `ubxlib_here_api_key` respectively, and a sensible `Description`, e.g. "API key for \[insert name here\]", then press `Save` for each one.
+
 ## Wait For Platform-Specific Tools To Be Installed On The Agents
 Trigger the `master` branch again and be patient; the various instances will install platform-specific tools onto the agents, which can take some time; restart the run if it times out.
 
@@ -576,8 +590,7 @@ Some other things to set:
 - Under `Manage Jenkins` -> `Configure System` find `Global Build Discarders`, add a `Default Build Discarder` and set `Days to keep builds` and `Days to keep artifacts` to some sensible number (e.g. 30).
 - Under `Manage Jenkins` -> `Configure System` find `Test Results Analyzer` and tick `Display run time for each test` 'cos that's useful to see.
 - You can dismiss the warning about not running jobs on the Jenkins master - we need to do that as we use it for thread-safety when managing shared resources.
-- In order to manage shared resources [Jenkinsfile](Jenkinsfile) uses a file, `shared_resources/counter`, on the Jenkins master, to count the number of things currently using those shared resources.  In case this ever gets out of step with reality, create a new `Pipeline` project, name it `ubxlib_clean_up`, give it a description, e.g. "Clean things up when all nodes are idle.", tick `Build periodicallty` and enter `H 6 * * *` (run at approcimately 06:00 daily), then into `Pipeline script` paste the contents of [jenkins_ubxlib_clean_up.txt](scripts/jenkins_ubxlib_clean_up.txt) and `Save` the project.
-- Select the `built-in` node, select `Script Console` and in it enter `System.setProperty("hudson.model.DirectoryBrowserSupport.CSP", "script-src 'unsafe-inline'")` then press `Run`; if you don't do this the CodeChecker nodes will not be able to display nice HTML output describing exactly what needs fixing.  This is not a security issue as we lock down access to Jenkins on a certificate/key basis to known users; keep the miscreants out at the gates.
+- In order to manage shared resources [Jenkinsfile](Jenkinsfile) uses a file, `shared_resources/counter`, on the Jenkins master, to count the number of things currently using those shared resources.  In case this ever gets out of step with reality, create a new `Pipeline` project, name it `ubxlib_clean_up`, give it a description, e.g. "Clean things up when all nodes are idle.", tick `Build periodicallty` and enter `H 6 * * *` (run at approximately 06:00 daily), then into `Pipeline script` paste the contents of [jenkins_ubxlib_clean_up.txt](scripts/jenkins_ubxlib_clean_up.txt) and `Save` the project.
 
 # Configure Test Instances
 With all of the Jenkins stuff done, and at least one of each agent type (Linux "beefy", Linux Raspbian and Windows), you can start configuring the instances.  Instances up to and including 9, the "check" instances need no further attention; it is the "test" instances, i.e. a thing with real MCUs/modules attached, that need additional configuration.
@@ -615,18 +628,23 @@ If the server has no DNS entry on the public internet (required for some tests) 
 ### Cellular And Short Range Network Test Peers
 A Nutaq cellular network box is required for cellular Cat-M1 coverage; set up of this is out of scope of this document: provided an RF link gets to the relevant test instances and the Nutaq has public internet access, that is all that is required.  To be clear, the Nutaq box does _not_ have to be on the same network as the `ubxlib` test system (though it can be if desired).
 
+Some cellular test instances (e.g. instance 25 and 29) may use the live network for their cellular test peer, rather than the Nutaq box (e.g. because the RAT that they use is not supported by the Nutaq box, which is the case for 2G, 3G, LTE non-Cat-M1 and LTE non-NB1).  Some live networks (e.g. O2/Telefonica in the UK) apply extremely annoying attach/detach rate limitations, and a UE may be banned for a attaching/detaching too often, certainly the case for one running our test regime.  To stop this buggering everything up, you should initially control the module in question directly, do a manual selection of a network which does not apply attach/detach rate limitations (e.g. Vodafone or 3 in the UK, where `AT+COPS=1,2,"23415` would, for example, select Vodafone in the UK), then switch back to automatic mode (`AT+COPS=0`), and maybe also add the same network to the preferred list (e.g. `AT+CPOL=1,2,"23415",1,1,1,1` would add Vodafone UK to the top of the list): this should hopefully stick the module to that network.
+
 Some short-range test instances require BLE test peers; these just need to be [configured](https://wiki.u-blox.com/bin/view/ShortRange/NewPlatforms), MAC addressses in [DATABASE.md](DATABASE.md) and then plugged into power from the shared resource Ethernet-based relay boxes so that they are powered up at the start of testing and powered down again afterwards.
 
-Similarly, some of the short-range test instances require access to a Wi-Fi Access Point; any Wi-Fi AP that has public internet access is fine (see Wi-Fi passkey configuration above).
+Similarly, some of the short-range test instances require access to a Wi-Fi access point with internet access; any Wi-Fi AP that has public internet access is fine (see Wi-Fi passkey configuration above).
+
+And finally the test `wifiCaptivePortal()` requires both a Wifi test client and a Wifi test access point (without internet access): see [wifi/test](/wifi/test) for details.
 
 ## Test Instance Hints
+- Any ESP-IDF instance: the ESP-IDF toolchain is huge: 3ish gigabytes.  If you _update_ to a new ESP-IDF version in the test system (by editing [u_packages.yml](u_packages.yml)) then you'll use another 3 gigabytes of disk space, which might put a bit of a pinch in the 32 gigabytes of SD card on a Raspberry Pi.  Hence it is best to (a) make sure that all branches get updated to such a new version at once (so that the previous version isn't pulled-down onto the test system by someone pushing a change to an old branch) and (b) SSH-into each Raspberry Pi that is running an ESP-IDF instance and delete the unused ESP-IDF versions from the `~/.ubxlibpkg` directory with something like `rm -rf ~/.ubxlibpkg/esp_idf_tools-v5.0.1` AND `rm -rf ~/.ubxlibpkg/esp_idf-v5.0.1` (to delete both the components and the toolchain of `v5.0.1`); don't be afraid of deleting the wrong thing, the automation system will re-install the things it needs next time it runs.
 - Instance 23, Windows:
   - Requires you to configure the [Virtual Serial Port](https://www.virtual-serial-port.org/) application to create a `loopback` serial port.  [DATABASE.md](DATABASE.md) will tell you which is the loopback serial port (`U_CFG_TEST_UART_A`, usually 100).
   - When a cellular, short-range, whatever, board is plugged into the Windows machine you will need to go into the `Device Manager` -> `Port Settings` -> `Advanced` and set the COM port number to match the one given in [DATABASE.md](DATABASE.md); e.g. `U_CFG_APP_SHORT_RANGE_UART=101` means you set the COM port for the short-range board to `COM101`.
-  - For a cellular EVK, which uses an FTDI chip, you will need to download and install the [FTDI Windows drivers](https://ftdichip.com/drivers/vcp-drivers/); if you use just the Windows 10 drivers you will end up with character loss, particularly noticable with the chip-to-chip tests.
-  - This instance also runs the special test `networkOutage` which controls an external MiniCircuits Ethernet-based RF switch and KMTronic Ethernet-based relay box; you will see in [DATABASE.md](DATABASE.md) the macros `U_CFG_TEST_NET_STATUS_CELL` and `U_CFG_TEST_NET_STATUS_SHORT_RANGE` which equate to strings such as `RF_SWITCH_A` and `PWR_SWITCH_A`.  The entries under `SWITCH_LIST` in the file `%homedrive%%homepath%\.ubx_automation\settings_v2_agent_specific.json` on the Windows agent map `RF_SWITCH_A`/`PWR_SWITCH_A` to actual IP addresses and an action for `0` or `1`, e.g. `:SETA=1` to switch on the RF switch, `FF0101` to switch on port 1 of the KMTronic switch, all of which are put together by the test scripts to form a URL string.  You need to set up the Ethernet addresses for these correctly in the `%homedrive%%homepath%\.ubx_automation\settings_v2_agent_specific.json` file of the Windows agent.  For the short-range part of this test local test peers are required for both WiFi and BLE: this is done with an appropriately [configured](https://wiki.u-blox.com/bin/view/ShortRange/NewPlatforms) NINA-W1 board, powered from a relay on `PWR_SWITCH_A` (e.g. the first relay on the KMTronic relay box) so that it can be switched off by the test script and configured to advertise a given BLE MAC address (e.g. remote central `6009C390E4DAp`) and include a Wi-Fi AP of a known SSID ( e.g. `disconnect_test_peer`, though not broadcast).
+  - For a cellular EVK, which uses an FTDI chip, you will need to download and install the [FTDI Windows drivers](https://ftdichip.com/drivers/vcp-drivers/); if you use just the Windows 10 drivers you will end up with character loss.
+  - This instance also runs the special test `networkOutage()` which controls an external MiniCircuits Ethernet-based RF switch and KMTronic Ethernet-based relay box; you will see in [DATABASE.md](DATABASE.md) the macros `U_CFG_TEST_NET_STATUS_CELL` and `U_CFG_TEST_NET_STATUS_SHORT_RANGE` which equate to strings such as `RF_SWITCH_A` and `PWR_SWITCH_A`.  The entries under `SWITCH_LIST` in the file `%homedrive%%homepath%\.ubx_automation\settings_v2_agent_specific.json` on the Windows agent map `RF_SWITCH_A`/`PWR_SWITCH_A` to actual IP addresses and an action for `0` or `1`, e.g. `:SETA=1` to switch on the RF switch, `FF0101` to switch on port 1 of the KMTronic switch, all of which are put together by the test scripts to form a URL string.  You need to set up the Ethernet addresses for these correctly in the `%homedrive%%homepath%\.ubx_automation\settings_v2_agent_specific.json` file of the Windows agent.  For the short-range part of this test local test peers are required for both WiFi and BLE: this is done with an appropriately [configured](https://wiki.u-blox.com/bin/view/ShortRange/NewPlatforms) NINA-W1 board, powered from a relay on `PWR_SWITCH_A` (e.g. the first relay on the KMTronic relay box) so that it can be switched off by the test script and configured to advertise a given BLE MAC address (e.g. remote central `6009C390E4DAp`) and include a Wi-Fi AP of a known SSID ( e.g. `disconnect_test_peer`, though not broadcast).
   - Note: if you have problems getting a COM port to appear, which does happen randomly, unplug the USB cable, go to the FTDI website and download their "CDM uninstaller" tool, get it to uninstall drivers for the relevant HW ID (e.g. `4030 6011` for the FTDI chip on the NINA-W1 EVK), then just plug the USB in again and a COM port should appear.
-- Instance 24 is pure Linux and needs a 32-bit compiler, which means it cannot be run on a Raspberry Pi (since GCC for ARM64 is 64-bit only); you will need to add the label `instance_24` to one of the non-Pi Linux nodes for this.
+- Instance 24 is Zephyr/Linux and needs a 32-bit compiler, which means it cannot be run on a Raspberry Pi (since GCC for ARM64 is 64-bit only); you will need to add the label `instance_24` to one of the non-Pi Linux nodes for this.
 - Instances 13.x, 15.x, 17 and 18 use a SEGGER J-Link probe (either built-in or in a dedicated JLink Base box) and address it by serial number; the correct serial number needs to be set for that instance in the `~/.ubx_automation/settings_v2_agent_specific.json` file of the Raspberry Pis.  You can see what serial number is connected by running the `nrfjprog --ids` command inside the Docker container that [Jenkinsfile](Jenkinsfile) runs:
 ```
 docker run --rm ubxlib_builder nrfjprog --ids
@@ -644,10 +662,23 @@ docker run --rm ubxlib_builder nrfjprog --ids
 - Instance 18 includes a test of Cloud Locate for which client ID, username and password parameters need to be entered as environment variables and a secret in Jenkins:
   - `Manage Jenkins` -> `Configure System` scroll down to `Global properties`, tick `Environment variables` and add the client ID and username on the end of the existing `UBXLIB_EXTRA_DEFINES` environment variable, separated with semicolons, e.g. `U_CFG_APP_CLOUD_LOCATE_MQTT_CLIENT_ID=device:521b5a33-2374-4547-8edc-50743c144509;U_CFG_APP_CLOUD_LOCATE_MQTT_USERNAME=WF592TTWUQ18512KLU6L`, being sure to leave **no** spaces,
   - `Manage Jenkins` -> `Manage Credentials`, create a credential of type `Secret text`, paste the password for the Thingstream account, something like `nsd8hsK/NSDFdgdblfmbQVXbx7jeZ/8vnsiltgty` into the `Secret` field, give it the `ID` `ubxlib_cloud_locate_mqtt_password` and a sensible `Description`, e.g. "Password for the Thingstream account with Cloud Locate", then press `Save`; [Jenkinsfile](Jenkinsfile) will parse this out and into a conditional compilation flag value for the builds.
-- Some test instances will test Cell Locate, for which a token must be entered as an environment variable and a secret in Jenkins: `Manage Jenkins` -> `Manage Credentials`, create a credential of type `Secret text`, paste the token for the Location thing from the Thingstream account, something like `tLLgF0pwRq-nx19wZXBYFg` into the `Secret` field, give it the `ID` `ubxlib_cell_locate_authentication_token` and a sensible `Description`, e.g. "Authentication token for Cell Locate from Thingstream account", then press `Save`; [Jenkinsfile](Jenkinsfile) will parse this out and into a conditional compilation flag value for the builds.  The same token will be used for AssistNow (Online and Offline) testing.
+- Some test instances will test Cell Locate, for which a token must be entered as an environment variable and a secret in Jenkins: `Manage Jenkins` -> `Manage Credentials`, create a credential of type `Secret text`, paste the token for the Location thing from the Thingstream account, something like `tLLgF0pwRq-nx19wZXBYFg` into the `Secret` field, give it the `ID` `ubxlib_cell_locate_authentication_token` and a sensible `Description`, e.g. "Authentication token for Cell Locate from Thingstream account", then press `Save`; [Jenkinsfile](Jenkinsfile) will parse this out and into a conditional compilation flag value for the builds.
+- Similarly, some GNSS test instances will test AssistNow (Online and Offline), also known as MGA (multiple GNSS assistance), for which a token must be entered as an environment variable and a secret in Jenkins: `Manage Jenkins` -> `Manage Credentials`, create a credential of type `Secret text`, paste the token for a Location thing from the Thingstream account, something like `tLLgF0pwRq-nx19wZXBYFg` into the `Secret` field, give it the `ID` `ubxlib_assist_now_authentication_token` and a sensible `Description`, e.g. "Authentication token for AssistNow (online and offline) from Thingstream account", then press `Save`; [Jenkinsfile](Jenkinsfile) will parse this out and into a conditional compilation flag value for the builds.  Note: if you use the same token for this and Cell Locate then make sure they run on the same test instance to avoid clashes.
+- Instance 28, pure Linux:
+  - Enable the SPI interface via `raspi-config` (but _not_ the I2C interface, see below).
+  - In the same way, set the serial port to NOT be used as a console, but still to be _enabled_.
+  - The I2C HW blocks on the BCM chip of the Raspberry Pi do not support clock stretching (which u-blox GNSS chips require) properly, hence it is necessary to enable the SW I2C implementation on the I2C pins by editing `/boot/config.txt` to add the line `dtoverlay=i2c-gpio,i2c_gpio_sda=2,i2c_gpio_scl=3,i2c_gpio_delay_us=2,bus=8`.
+  - To use the UART port, which appears by default on pins GPIO14/GPIO15, use `raspi-config` -> `Performance Options` to switch off fan-control.
+  - BEFORE allowing the Raspberry Pi to reboot, disable Bluetooth (so that we get to use `UART0` on `GPIO14`/`GPIO15` for stuff) by editing `/boot/config.txt` to add the line `dtoverlay=disable-bt`, then run the following to disable the associated services:<br>
+`sudo systemctl disable hciuart.service`<br>
+`sudo systemctl disable bluetooth.service`<br>
+  - ALSO BEFORE rebooting the Raspberry Pi, enable UART3 (by default on pins GPIO4 (TXD), GPIO5 (RXD), GPIO6 (CTS) and GPIO7 (RTS)) by editing `/boot/config.txt` to add the line `dtoverlay=uart3,ctsrts`.
+  - ALSO ALSO BEFORE rebooting the Raspberry Pi, switch off the second SPI chip-select pin as it clashes with the UART3 CTS pin (GPIO7) by editing `/boot/config.txt` to add the line `dtoverlay=spi0-1cs`.
+  - Note: if you're confused about what GPIO is now doing what, once rebooted, enter `raspi-gpio get` to obtain a list.
+  - Hint: probably don't copy this particular SD card for use on any other Raspberry Pis as it is now rather specifically configured.
 
 ## Adding a New Test Instance With Physical HW
-Not strictly part of the setup process but, should you need to add an instance that has physical HW attached to the test system afterwards, the generic parts  i.e. after you have, for instance, attached the HW to a new Raspberry Pi and added the new Raspberry Pi to the Jenkins (see above), are as follows:
+Not strictly part of the setup process but, should you need to add an instance that has physical HW attached to the test system afterwards, the generic parts i.e. after you have, for instance, attached the HW to a new Raspberry Pi and added the new Raspberry Pi to the Jenkins (see above), are as follows:
 
 - Edit [u_settings.py](scripts/u_settings.py) to add the new entry on the end of the `__DEFAULT_SETTINGS["CONNECTION_INSTANCE_...` set; copy an existing one that is close (e.g. copy an NRF one for a new NRF board etc.), e.g.
 

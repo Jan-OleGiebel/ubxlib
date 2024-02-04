@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,6 +46,7 @@
 //lint -efile(766, u_port.h) Suppress header file not used, which
 // is true if U_CELL_TEST_CFG_APN is not defined
 #include "u_port.h" // For U_PORT_STRINGIFY_QUOTED()
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_debug.h"
 
@@ -138,7 +139,12 @@ static const uDeviceCfg_t gDeviceCfgCell = {
             .pinTxd = U_CFG_APP_PIN_CELL_TXD,
             .pinRxd = U_CFG_APP_PIN_CELL_RXD,
             .pinCts = U_CFG_APP_PIN_CELL_CTS,
-            .pinRts = U_CFG_APP_PIN_CELL_RTS
+            .pinRts = U_CFG_APP_PIN_CELL_RTS,
+#ifdef U_CFG_APP_UART_PREFIX
+            .pPrefix = U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX) // Relevant for Linux only
+#else
+            .pPrefix = NULL
+#endif
         }
     }
 #else
@@ -157,7 +163,22 @@ static const uNetworkCfgCell_t gNetworkCfgCell = {
 # else
     .pApn = NULL,
 # endif
-    .timeoutSeconds = U_CELL_TEST_CFG_CONNECT_TIMEOUT_SECONDS
+    .timeoutSeconds = U_CELL_TEST_CFG_CONNECT_TIMEOUT_SECONDS,
+# ifdef U_CELL_TEST_CFG_USERNAME
+    .pUsername = U_PORT_STRINGIFY_QUOTED(U_CELL_TEST_CFG_USERNAME),
+# else
+    .pUsername = NULL,
+# endif
+# ifdef U_CELL_TEST_CFG_PASSWORD
+    .pPassword = U_PORT_STRINGIFY_QUOTED(U_CELL_TEST_CFG_PASSWORD),
+# else
+    .pPassword = NULL,
+# endif
+# ifdef U_CELL_TEST_CFG_AUTHENTICATION_MODE
+    .authenticationMode = (int32_t) U_CELL_TEST_CFG_AUTHENTICATION_MODE,
+# else
+    .authenticationMode = 0,
+# endif
 #else
     .type = U_NETWORK_TYPE_NONE
 #endif
@@ -182,7 +203,12 @@ static const uDeviceCfg_t gDeviceCfgShortRange = {
             .pinTxd = U_CFG_APP_PIN_SHORT_RANGE_TXD,
             .pinRxd = U_CFG_APP_PIN_SHORT_RANGE_RXD,
             .pinCts = U_CFG_APP_PIN_SHORT_RANGE_CTS,
-            .pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS
+            .pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS,
+#ifdef U_CFG_APP_UART_PREFIX
+            .pPrefix = U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX) // Relevant for Linux only
+#else
+            .pPrefix = NULL
+#endif
         }
     }
 #else
@@ -255,11 +281,16 @@ static const uDeviceCfg_t gDeviceCfgGnss = {
     .transportCfg = {
         .cfgUart = {
             .uart = U_CFG_APP_GNSS_UART,
-            .baudRate = U_GNSS_UART_BAUD_RATE,
+            .baudRate = U_NETWORK_TEST_GNSS_BAUD_RATE,
             .pinTxd = U_CFG_APP_PIN_GNSS_TXD,
             .pinRxd = U_CFG_APP_PIN_GNSS_RXD,
             .pinCts = U_CFG_APP_PIN_GNSS_CTS,
-            .pinRts = U_CFG_APP_PIN_GNSS_RTS
+            .pinRts = U_CFG_APP_PIN_GNSS_RTS,
+#ifdef U_CFG_APP_UART_PREFIX
+            .pPrefix = U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX) // Relevant for Linux only
+#else
+            .pPrefix = NULL
+#endif
         }
     }
 # endif
@@ -291,8 +322,12 @@ static uNetworkTestDevice_t gUNetworkTest[] = {
         .pCfg = &gDeviceCfgShortRange,
         .network =
         {
-            {.type = U_NETWORK_TYPE_BLE, .pCfg = (const void *) &gNetworkCfgBle},
-            {.type = U_NETWORK_TYPE_WIFI, .pCfg = (const void *) &gNetworkCfgWifi}
+            // These are added to the linked list in reverse order and
+            // BLE resets the module when it is started, hence it is
+            // important that Wifi gets started last or any network
+            // connection will be lost
+            {.type = U_NETWORK_TYPE_WIFI, .pCfg = (const void *) &gNetworkCfgWifi},
+            {.type = U_NETWORK_TYPE_BLE, .pCfg = (const void *) &gNetworkCfgBle}
         }
     },
     {
@@ -301,7 +336,7 @@ static uNetworkTestDevice_t gUNetworkTest[] = {
         .network =
         {
             {.type = U_NETWORK_TYPE_CELL, .pCfg = (const void *) &gNetworkCfgCell},
-#if defined(U_CFG_TEST_GNSS_MODULE_TYPE) && (U_CFG_APP_GNSS_UART < 0) && (U_CFG_APP_GNSS_I2C < 0)
+#if defined(U_CFG_TEST_GNSS_MODULE_TYPE) && (U_CFG_APP_GNSS_UART < 0) && (U_CFG_APP_GNSS_I2C < 0) && (U_CFG_APP_GNSS_SPI < 0)
             {.type = U_NETWORK_TYPE_GNSS, .pCfg = (const void *) &gNetworkCfgGnss}
 #else
             {.type = U_NETWORK_TYPE_NONE, .pCfg = NULL}
@@ -574,6 +609,15 @@ bool uNetworkTestHasHttp(uDeviceType_t deviceType,
     (void) deviceType;
     (void) moduleType;
 
+#ifdef U_UCONNECT_GEN2
+    if (deviceType == U_DEVICE_TYPE_SHORT_RANGE) {
+        // *** UCX WORKAROUND FIX ***
+        // No http support in ucx yet
+        return false;
+    }
+
+#endif
+
     // The LARA-R6 module on the test system fails this
     // test intermittently; LARA-R6 seems to forget the
     // server host name part of the way through the test run,
@@ -638,6 +682,16 @@ bool uNetworkTestHasStatusCallback(uDeviceType_t deviceType,
     (void) moduleType;
     return (networkType == U_NETWORK_TYPE_BLE) || (networkType == U_NETWORK_TYPE_WIFI) ||
            (networkType == U_NETWORK_TYPE_CELL);
+}
+
+// Return true if the configuration supports a PPP connection.
+bool uNetworkTestHasPpp(uDeviceType_t deviceType,
+                        uNetworkType_t networkType,
+                        int32_t moduleType)
+{
+    (void) deviceType;
+    (void) moduleType;
+    return (networkType == U_NETWORK_TYPE_CELL);
 }
 
 // End of file

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,13 +32,13 @@
 #include "stddef.h"    // NULL, size_t etc.
 #include "stdint.h"    // int32_t etc.
 #include "stdbool.h"
-#include "string.h"    // memcpy()
+#include "string.h"    // memcpy(), memset()
 
 #include "u_cfg_os_platform_specific.h"
 #include "u_error_common.h"
 #include "u_assert.h"
-#include "u_port_heap.h"
 #include "u_port_os.h"
+#include "u_port_heap.h"
 
 #include "u_port_event_queue_private.h"
 #include "u_port_event_queue.h"
@@ -103,7 +103,7 @@ static void eventQueueTask(void *pParam)
 {
     uEventQueue_t *pEventQueue = (uEventQueue_t *) pParam;
     char param[U_PORT_EVENT_QUEUE_CONTROL_OR_SIZE_LENGTH_BYTES +
-                                                               U_PORT_EVENT_QUEUE_MAX_PARAM_LENGTH_BYTES];
+               U_PORT_EVENT_QUEUE_MAX_PARAM_LENGTH_BYTES];
     uEventQueueControlOrSize_t *pControlOrSize = (uEventQueueControlOrSize_t *)
                                                  & (param[0]);
 
@@ -167,6 +167,9 @@ static int32_t eventQueueFree(uEventQueue_t *pEventQueue)
                             U_PORT_EVENT_QUEUE_CONTROL_OR_SIZE_LENGTH_BYTES);
 
     if (pControl != NULL) {
+        // Keep memory checkers (e.g. Valgrind) happy
+        memset(pControl, 0, pEventQueue->paramMaxLengthBytes +
+               U_PORT_EVENT_QUEUE_CONTROL_OR_SIZE_LENGTH_BYTES);
         *((uEventQueueControlOrSize_t *) pControl) = U_EVENT_CONTROL_EXIT_NOW;
         // Get the task to exit, persisting until it is done
         while (uPortQueueSend(pEventQueue->queue, pControl) != 0) {
@@ -411,6 +414,9 @@ int32_t uPortEventQueueSend(int32_t handle, const void *pParam,
             pBlock = (char *) pUPortMalloc(pEventQueue->paramMaxLengthBytes +
                                            U_PORT_EVENT_QUEUE_CONTROL_OR_SIZE_LENGTH_BYTES);
             if (pBlock != NULL) {
+                // Keep memory checkers (e.g. Valgrind) happy
+                memset(pBlock, 0, pEventQueue->paramMaxLengthBytes +
+                       U_PORT_EVENT_QUEUE_CONTROL_OR_SIZE_LENGTH_BYTES);
                 // Copy in the control word, which is actually just
                 // the size in this case
                 //lint -e(826) Suppress area too small; the size of pBlock is always
@@ -452,7 +458,7 @@ int32_t uPortEventQueueSendIrq(int32_t handle, const void *pParam,
     uErrorCode_t errorCode = U_ERROR_COMMON_NOT_INITIALISED;
     uEventQueue_t *pEventQueue;
     char block[paramLengthBytes +
-                                U_PORT_EVENT_QUEUE_CONTROL_OR_SIZE_LENGTH_BYTES];
+               U_PORT_EVENT_QUEUE_CONTROL_OR_SIZE_LENGTH_BYTES];
 
     if (gMutex != NULL) {
         // Can't lock the mutex, we're in an interrupt.

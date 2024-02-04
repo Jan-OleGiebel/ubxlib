@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -172,12 +172,24 @@ int32_t uNetworkPrivateChangeStateCell(uDeviceHandle_t devHandle,
                                        (((int64_t) pCfg->timeoutSeconds) * 1000);
             }
             if (upNotDown) {
-                // Connect using automatic selection,
-                // default no user name or password for the APN
-                errorCode = uCellNetConnect(devHandle, NULL,
-                                            pCfg->pApn,
-                                            NULL, NULL,
-                                            pKeepGoingCallback);
+                // Set the authentication mode
+                errorCode = uCellNetSetAuthenticationMode(devHandle, pCfg->authenticationMode);
+                if (errorCode < 0) {
+                    // uCellNetSetAuthenticationMode() will return "not supported"
+                    // if automatic mode is set for a module that does not support
+                    // automatic mode but that is a bit confusing as a return value
+                    // for uNetworkInterfaceUp(), so change it to "invalid parameter"
+                    errorCode = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
+                }
+                if (errorCode == 0) {
+                    // Connect using automatic selection
+                    errorCode = uCellNetConnect(devHandle,
+                                                pCfg->pMccMnc,
+                                                pCfg->pApn,
+                                                pCfg->pUsername,
+                                                pCfg->pPassword,
+                                                pKeepGoingCallback);
+                }
             } else {
                 // Disconnect
                 errorCode = uCellNetDisconnect(devHandle, pKeepGoingCallback);

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -57,6 +57,14 @@ U_WEAK int32_t uCellFileWrite(uDeviceHandle_t cellHandle,
     (void) pFileName;
     (void) pData;
     (void) dataSize;
+    return (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
+}
+
+U_WEAK int32_t uCellFileSize(uDeviceHandle_t cellHandle,
+                             const char *pFileName)
+{
+    (void) cellHandle;
+    (void) pFileName;
     return (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
 }
 
@@ -183,6 +191,16 @@ U_WEAK int32_t uCellHttpGetLastErrorCode(uDeviceHandle_t cellHandle, int32_t htt
 {
     (void) cellHandle;
     (void) httpHandle;
+    return (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
+}
+
+// This used only in the test code, but still needs a U_WEAK
+// version for that case.
+U_WEAK int32_t uCellPwrReboot(uDeviceHandle_t cellHandle,
+                              bool (*pKeepGoingCallback) (uDeviceHandle_t))
+{
+    (void) cellHandle;
+    (void) pKeepGoingCallback;
     return (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
 }
 

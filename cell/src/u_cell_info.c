@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,6 +39,7 @@
 #include "ctype.h"     // isdigit()
 
 #include "u_cfg_sw.h"
+#include "u_compiler.h" // U_DEPRECATED
 
 #include "u_error_common.h"
 
@@ -75,46 +76,6 @@
  * STATIC FUNCTIONS
  * -------------------------------------------------------------- */
 
-// Convert RSRP in 3GPP TS 36.133 format to dBm.
-// Returns 0 if the number is not known.
-// 0: -141 dBm or less,
-// 1..96: from -140 dBm to -45 dBm with 1 dBm steps,
-// 97: -44 dBm or greater,
-// 255: not known or not detectable.
-static int32_t rsrpToDbm(int32_t rsrp)
-{
-    int32_t rsrpDbm = 0;
-
-    if ((rsrp >= 0) && (rsrp <= 97)) {
-        rsrpDbm = rsrp - (97 + 44);
-        if (rsrpDbm < -141) {
-            rsrpDbm = -141;
-        }
-    }
-
-    return rsrpDbm;
-}
-
-// Convert RSRQ in 3GPP TS 36.133 format to dB.
-// Returns 0x7FFFFFFF if the number is not known.
-// -30: less than -34 dB
-// -29..46: from -34 dB to 2.5 dB with 0.5 dB steps
-//          where 0 is -19.5 dB
-// 255: not known or not detectable.
-static int32_t rsrqToDb(int32_t rsrq)
-{
-    int32_t rsrqDb = 0x7FFFFFFF;
-
-    if ((rsrq >= -30) && (rsrq <= 46)) {
-        rsrqDb = (rsrq - 39) / 2;
-        if (rsrqDb < -34) {
-            rsrqDb = -34;
-        }
-    }
-
-    return rsrqDb;
-}
-
 // Convert the UTRAN RSSI number in 3GPP TS 25.133 format to dBm.
 // Returns 0x7FFFFFFF if the number is not known.
 // 0:     less than -100 dBm
@@ -145,47 +106,10 @@ static int32_t ecnoLevToDb(int32_t ecnoLev)
     int32_t ecnoDb = 0x7FFFFFFF;
 
     if ((ecnoLev >= 0) && (ecnoLev <= 49)) {
-        ecnoDb = -((ecnoLev - 49) >> 2);
+        ecnoDb = - (int32_t) (((uint32_t) (ecnoLev - 49)) >> 2);
     }
 
     return ecnoDb;
-}
-
-// Get an ID string from the cellular module.
-static int32_t getString(uAtClientHandle_t atHandle,
-                         const char *pCmd, char *pBuffer,
-                         size_t bufferSize)
-{
-    int32_t errorCodeOrSize;
-    int32_t bytesRead;
-    char delimiter;
-
-    uAtClientLock(atHandle);
-    uAtClientCommandStart(atHandle, pCmd);
-    uAtClientCommandStop(atHandle);
-    // Don't want characters in the string being interpreted
-    // as delimiters
-    delimiter = uAtClientDelimiterGet(atHandle);
-    uAtClientDelimiterSet(atHandle, '\x00');
-    uAtClientResponseStart(atHandle, NULL);
-    bytesRead = uAtClientReadString(atHandle, pBuffer,
-                                    bufferSize, false);
-    uAtClientResponseStop(atHandle);
-    // Restore the delimiter
-    uAtClientDelimiterSet(atHandle, delimiter);
-    errorCodeOrSize = uAtClientUnlock(atHandle);
-    if ((bytesRead >= 0) && (errorCodeOrSize == 0)) {
-        uPortLog("U_CELL_INFO: ID string, length %d character(s),"
-                 " returned by %s is \"%s\".\n",
-                 bytesRead, pCmd, pBuffer);
-        errorCodeOrSize = bytesRead;
-    } else {
-        errorCodeOrSize = (int32_t) U_CELL_ERROR_AT;
-        uPortLog("U_CELL_INFO: unable to read ID string using"
-                 " %s.\n", pCmd);
-    }
-
-    return errorCodeOrSize;
 }
 
 // Get SINR as an integer from a decimal (e.g -13.75) in a string,
@@ -253,7 +177,8 @@ static int32_t getRadioParamsUcged2SaraR5(uAtClientHandle_t atHandle,
                                           uCellPrivateRadioParameters_t *pRadioParameters)
 {
     int32_t x;
-    char buffer[10]; // More than enough room for an SNIR reading, e.g. 13.75, with a terminator
+    char buffer[10]; // More than enough room for an SNIR reading, e.g. 13.75,
+    // with a terminator, and enough for an 8-digit cell ID
 
     // +UCGED: 2
     // <rat>,<svc>,<MCC>,<MNC>
@@ -274,14 +199,18 @@ static int32_t getRadioParamsUcged2SaraR5(uAtClientHandle_t atHandle,
     uAtClientResponseStart(atHandle, NULL);
     // EARFCN is the first integer
     pRadioParameters->earfcn = uAtClientReadInt(atHandle);
-    // Skip <Lband>, <ul_BW>, <dl_BW>, <tac> and <LcellId>
-    uAtClientSkipParameters(atHandle, 5);
+    // Skip <Lband>, <ul_BW>, <dl_BW> and <tac>
+    uAtClientSkipParameters(atHandle, 4);
+    // Read <LcellId>
+    if (uAtClientReadString(atHandle, buffer, sizeof(buffer), false) > 0) {
+        pRadioParameters->cellIdLogical = strtol(buffer, NULL, 16);
+    }
     // Read <PCID>
-    pRadioParameters->cellId = uAtClientReadInt(atHandle);
+    pRadioParameters->cellIdPhysical = uAtClientReadInt(atHandle);
     // Skip <mTmsi>, <mmeGrId> and <mmeCode>
     uAtClientSkipParameters(atHandle, 3);
     // RSRP is element 11, coded as specified in TS 36.133
-    pRadioParameters->rsrpDbm = rsrpToDbm(uAtClientReadInt(atHandle));
+    pRadioParameters->rsrpDbm = uCellPrivateRsrpToDbm(uAtClientReadInt(atHandle));
     // RSRQ is element 12, coded as specified in TS 36.133.
     x = uAtClientReadInt(atHandle);
     if (uAtClientErrorGet(atHandle) == 0) {
@@ -289,7 +218,7 @@ static int32_t getRadioParamsUcged2SaraR5(uAtClientHandle_t atHandle,
         // we check for errors here so as not to mix up
         // what might be a negative error code with a
         // negative return value.
-        pRadioParameters->rsrqDb = rsrqToDb(x);
+        pRadioParameters->rsrqDb = uCellPrivateRsrqToDb(x);
     }
     // SINR is element 13, directly in dB, a decimal number
     // with a mantissa, 255 if unknown.
@@ -308,6 +237,7 @@ static int32_t getRadioParamsUcged2SaraR422(uAtClientHandle_t atHandle,
 {
     int32_t x;
     int32_t y;
+    char buffer[U_CELL_PRIVATE_CELL_ID_LOGICAL_SIZE + 1]; // +1 for terminator
 
     uAtClientLock(atHandle);
     uAtClientCommandStart(atHandle, "AT+UCGED?");
@@ -337,7 +267,9 @@ static int32_t getRadioParamsUcged2SaraR422(uAtClientHandle_t atHandle,
         // Skip <band1900>
         uAtClientSkipParameters(atHandle, 1);
         // Read <GcellId>
-        pRadioParameters->cellId = uAtClientReadInt(atHandle);
+        if (uAtClientReadString(atHandle, buffer, sizeof(buffer), false) > 0) {
+            pRadioParameters->cellIdLogical = strtol(buffer, NULL, 16);
+        }
         // RSSI is in the rxlev parameter element 7
         // If we don't already have it (from doing AT+CSQ),
         // get it from here
@@ -369,7 +301,7 @@ static int32_t getRadioParamsUcged2SaraR422(uAtClientHandle_t atHandle,
         // Skip <Lband>, <ul_BW>, <dl_BW> and <TAC>
         uAtClientSkipParameters(atHandle, 4);
         // Read <P-CID>
-        pRadioParameters->cellId = uAtClientReadInt(atHandle);
+        pRadioParameters->cellIdPhysical = uAtClientReadInt(atHandle);
         // RSRP is element 7, as a plain-old dBm value
         x = uAtClientReadInt(atHandle);
         // RSRQ is element 8, as a plain-old dB value.
@@ -403,7 +335,8 @@ static int32_t getRadioParamsUcged2LaraR6(uAtClientHandle_t atHandle,
     int32_t skipParameters = 2;
     int32_t x;
     int32_t y;
-    char buffer[10]; // More than enough room for an SNIR reading, e.g. 13.75, with a terminator
+    char buffer[10]; // More than enough room for an SNIR reading, e.g. 13.75,
+    // with a terminator, or an 8-digit logical cell ID
     // The formats are RAT dependent as follows:
     //
     // 2G:
@@ -455,7 +388,9 @@ static int32_t getRadioParamsUcged2LaraR6(uAtClientHandle_t atHandle,
             // Skip <band1900>
             uAtClientSkipParameters(atHandle, 1);
             // Read <GcellId>
-            pRadioParameters->cellId = uAtClientReadInt(atHandle);
+            if (uAtClientReadString(atHandle, buffer, sizeof(buffer), false) > 0) {
+                pRadioParameters->cellIdLogical = strtol(buffer, NULL, 16);
+            }
             // Ignore the rest; rssiDbm will have come in via CSQ
             break;
         case 3:
@@ -464,7 +399,9 @@ static int32_t getRadioParamsUcged2LaraR6(uAtClientHandle_t atHandle,
             // Skip <Wband>
             uAtClientSkipParameters(atHandle, 1);
             // Read <WcellId>
-            pRadioParameters->cellId = uAtClientReadInt(atHandle);
+            if (uAtClientReadString(atHandle, buffer, sizeof(buffer), false) > 0) {
+                pRadioParameters->cellIdLogical = strtol(buffer, NULL, 16);
+            }
             // Skip <Wlac>, <Wrac>, <scrambling_code> and <Wrrc>
             uAtClientSkipParameters(atHandle, 4);
             // Read <rssi> and convert it to dBm
@@ -476,23 +413,52 @@ static int32_t getRadioParamsUcged2LaraR6(uAtClientHandle_t atHandle,
         case 4:
             // EARFCN is the first integer
             pRadioParameters->earfcn = uAtClientReadInt(atHandle);
-            // Skip <Lband>, <ul_BW>, <dl_BW>, <TAC> and <LcellId>
-            uAtClientSkipParameters(atHandle, 5);
-            // Read <P-CID>
-            pRadioParameters->cellId = uAtClientReadInt(atHandle);
+            // Skip <Lband>, <ul_BW>, <dl_BW> and <TAC>
+            uAtClientSkipParameters(atHandle, 4);
+            // Read <LcellId>
+            if (uAtClientReadString(atHandle, buffer, sizeof(buffer), false) > 0) {
+                y = strtol(buffer, NULL, 16);
+                // LARA-R6 has been seen to return a logical cell ID
+                // of 0, even when obviously registered (because +CEREG
+                // shows a proper hex value), therefore only update
+                // the logical cell ID here if we have something real
+                if (y > 0) {
+                    pRadioParameters->cellIdLogical = y;
+                }
+            }
+            // Read <PCID>
+            pRadioParameters->cellIdPhysical = uAtClientReadInt(atHandle);
             // Skip <mTmsi>, <mmeGrId> and <mmeCode>
             uAtClientSkipParameters(atHandle, 3);
-            // RSRP is element 11, as a plain-old dBm value
+            // In the LARA-R6 00B FW RSRP (element 11) and RSRQ (element 12)
+            // are plain-old dBm values, while in the LARA-R6 01B FW they are
+            // both 3GPP coded values.  Since RSRP is negative in plain-old
+            // form and positive in 3GPP form we can, thankfully, tell the
+            // difference
             x = uAtClientReadInt(atHandle);
-            // RSRQ is element 12, as a plain-old dB value.
-            y = uAtClientReadInt(atHandle);
-            if (uAtClientErrorGet(atHandle) == 0) {
-                // Note that these last two are usually negative
-                // integers, hence we check for errors here so as
-                // not to mix up what might be a negative error
-                // code with a negative return value.
-                pRadioParameters->rsrpDbm = x;
-                pRadioParameters->rsrqDb = y;
+            if (x >= 0) {
+                // RSRP is coded as specified in TS 36.133
+                pRadioParameters->rsrpDbm = uCellPrivateRsrpToDbm(x);
+                // RSRQ is coded as specified in TS 36.133.
+                x = uAtClientReadInt(atHandle);
+                if (uAtClientErrorGet(atHandle) == 0) {
+                    // Note that this can be a negative integer, hence
+                    // we check for errors here so as not to mix up
+                    // what might be a negative error code with a
+                    // negative return value.
+                    pRadioParameters->rsrqDb = uCellPrivateRsrqToDb(x);
+                }
+            } else {
+                // RSRP and RSRQ are plain-old dB values.
+                y = uAtClientReadInt(atHandle);
+                if (uAtClientErrorGet(atHandle) == 0) {
+                    // Note that these last two are usually negative
+                    // integers, hence we check for errors here so as
+                    // not to mix up what might be a negative error
+                    // code with a negative return value.
+                    pRadioParameters->rsrpDbm = x;
+                    pRadioParameters->rsrqDb = y;
+                }
             }
             // SINR is element 13, directly in tenths of a dB, a
             // decimal number with a mantissa, 255 if unknown.
@@ -541,7 +507,7 @@ static int32_t getRadioParamsUcged5(uAtClientHandle_t atHandle,
     uAtClientCommandStart(atHandle, "AT+UCGED?");
     uAtClientCommandStop(atHandle);
     uAtClientResponseStart(atHandle, "+RSRP:");
-    pRadioParameters->cellId = uAtClientReadInt(atHandle);
+    pRadioParameters->cellIdPhysical = uAtClientReadInt(atHandle);
     pRadioParameters->earfcn = uAtClientReadInt(atHandle);
     if (uAtClientReadString(atHandle, buffer, sizeof(buffer), false) > 0) {
         pRadioParameters->rsrpDbm = strToInt32(buffer);
@@ -554,6 +520,125 @@ static int32_t getRadioParamsUcged5(uAtClientHandle_t atHandle,
     }
     uAtClientResponseStop(atHandle);
     return uAtClientUnlock(atHandle);
+}
+
+// Get the time and time-zone offset.
+static int64_t getTimeAndTimeZone(uAtClientHandle_t atHandle,
+                                  int32_t *pTimeZoneSeconds)
+{
+    int64_t errorCodeOrValue;
+    int64_t timeValue;
+    int32_t timeZoneSeconds = INT_MIN;
+    char timezoneSign = 0;
+    char buffer[32];
+    struct tm timeInfo;
+    int32_t bytesRead;
+    size_t offset = 0;
+
+    uAtClientLock(atHandle);
+    uAtClientCommandStart(atHandle, "AT+CCLK?");
+    uAtClientCommandStop(atHandle);
+    uAtClientResponseStart(atHandle, "+CCLK:");
+    bytesRead = uAtClientReadString(atHandle, buffer,
+                                    sizeof(buffer), false);
+    uAtClientResponseStop(atHandle);
+    errorCodeOrValue = uAtClientUnlock(atHandle);
+    if ((bytesRead >= 17) && (errorCodeOrValue == 0)) {
+        errorCodeOrValue = (int64_t) U_ERROR_COMMON_UNKNOWN;
+        uPortLog("U_CELL_INFO: time is %s.\n", buffer);
+        // The format of the returned string is
+        // "yy/MM/dd,hh:mm:ss+TZ" but the +TZ may be omitted
+        // Two-digit year converted to years since 1900
+        offset = 0;
+        buffer[offset + 2] = 0;
+        timeInfo.tm_year = atoi(&(buffer[offset])) + 2000 - 1900;
+        // Months converted to months since January
+        offset = 3;
+        buffer[offset + 2] = 0;
+        timeInfo.tm_mon = atoi(&(buffer[offset])) - 1;
+        // Day of month
+        offset = 6;
+        buffer[offset + 2] = 0;
+        timeInfo.tm_mday = atoi(&(buffer[offset]));
+        // Hours since midnight
+        offset = 9;
+        buffer[offset + 2] = 0;
+        timeInfo.tm_hour = atoi(&(buffer[offset]));
+        // Minutes after the hour
+        offset = 12;
+        buffer[offset + 2] = 0;
+        timeInfo.tm_min = atoi(&(buffer[offset]));
+        // Seconds after the hour
+        // ...but, if there is timezone information,
+        // save it before we obliterate the sign
+        if (bytesRead >= 20) {
+            timezoneSign = buffer[17];
+        }
+        offset = 15;
+        buffer[offset + 2] = 0;
+        timeInfo.tm_sec = atoi(&(buffer[offset]));
+        // Get the time in seconds from this
+        timeValue = mktime64(&timeInfo);
+        offset = 17;
+        if ((timeValue >= 0) && (bytesRead >= 20) &&
+            ((timezoneSign == '+') || (timezoneSign == '-'))) {
+            // There's a timezone, expressed in 15 minute intervals,
+            // put the timezone sign back so that atoi() can handle it
+            buffer[offset] = timezoneSign;
+            buffer[offset + 3] = 0;
+            timeZoneSeconds = atoi(&(buffer[offset])) * 15 * 60;
+        }
+
+        if (timeValue >= 0) {
+            errorCodeOrValue = timeValue;
+            uPortLog("U_CELL_INFO: local time is %d", (int32_t) errorCodeOrValue);
+            if (timeZoneSeconds > INT_MIN) {
+                uPortLog(", timezone offset %d seconds, hence UTC time is %d.\n", timeZoneSeconds,
+                         (int32_t) (errorCodeOrValue - timeZoneSeconds));
+                if (pTimeZoneSeconds != NULL) {
+                    *pTimeZoneSeconds = timeZoneSeconds;
+                }
+            } else {
+                uPortLog(".\n");
+            }
+        } else {
+            uPortLog("U_CELL_INFO: unable to calculate time.\n");
+        }
+    } else {
+        errorCodeOrValue = (int64_t) U_CELL_ERROR_AT;
+        uPortLog("U_CELL_INFO: unable to read time with AT+CCLK.\n");
+    }
+
+    return errorCodeOrValue;
+}
+
+// Get the cell ID.
+int32_t getCellId(uDeviceHandle_t cellHandle, bool logicalNotPhysical)
+{
+    int32_t errorCodeOrValue = (int32_t) U_ERROR_COMMON_NOT_INITIALISED;
+    uCellPrivateInstance_t *pInstance;
+
+    if (gUCellPrivateMutex != NULL) {
+
+        U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
+
+        pInstance = pUCellPrivateGetInstance(cellHandle);
+        errorCodeOrValue = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
+        if (pInstance != NULL) {
+            if (logicalNotPhysical) {
+                errorCodeOrValue = pInstance->radioParameters.cellIdLogical;
+            } else {
+                errorCodeOrValue = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
+                if (pInstance->pModule->moduleType != U_CELL_MODULE_TYPE_LENA_R8) {
+                    errorCodeOrValue = pInstance->radioParameters.cellIdPhysical;
+                }
+            }
+        }
+
+        U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
+    }
+
+    return errorCodeOrValue;
 }
 
 /* ----------------------------------------------------------------
@@ -579,7 +664,7 @@ int32_t uCellInfoRefreshRadioParameters(uDeviceHandle_t cellHandle)
             errorCode = (int32_t) U_CELL_ERROR_NOT_REGISTERED;
             atHandle = pInstance->atHandle;
             pRadioParameters = &(pInstance->radioParameters);
-            uCellPrivateClearRadioParameters(pRadioParameters);
+            uCellPrivateClearRadioParameters(pRadioParameters, true);
             if (uCellPrivateIsRegistered(pInstance)) {
                 // The mechanisms to get the radio information
                 // are different between EUTRAN and GERAN but
@@ -587,50 +672,55 @@ int32_t uCellInfoRefreshRadioParameters(uDeviceHandle_t cellHandle)
                 // doesn't return a reading.  Collect what we can
                 // with it
                 errorCode = getRadioParamsCsq(atHandle, pRadioParameters);
-                // Note that AT+UCGED is used next rather than AT+CESQ
-                // as, in my experience, it is more reliable in
-                // reporting answers.
-                // Allow a little sleepy-byes here, don't want to overtask
-                // the module if this is being called repeatedly
-                uPortTaskBlock(500);
-                if (U_CELL_PRIVATE_HAS(pInstance->pModule, U_CELL_PRIVATE_FEATURE_UCGED5)) {
-                    // SARA-R4 (except 422) only supports UCGED=5, and it only
-                    // supports it in EUTRAN mode
-                    rat = uCellPrivateGetActiveRat(pInstance);
-                    if (U_CELL_PRIVATE_RAT_IS_EUTRAN(rat)) {
-                        errorCode = getRadioParamsUcged5(atHandle, pRadioParameters);
+                // Note that none of the mechanisms below are supported by
+                // LENA-R8: if you can't get it with AT+CSQ then you can't get it
+                if (U_CELL_PRIVATE_HAS(pInstance->pModule, U_CELL_PRIVATE_FEATURE_UCGED)) {
+                    // Note that AT+UCGED is used next rather than AT+CESQ
+                    // as, in my experience, it is more reliable in
+                    // reporting answers.
+                    // Allow a little sleepy-byes here, don't want to overtask
+                    // the module if this is being called repeatedly
+                    uPortTaskBlock(500);
+                    if (U_CELL_PRIVATE_HAS(pInstance->pModule, U_CELL_PRIVATE_FEATURE_UCGED5)) {
+                        // SARA-R4 (except 422) only supports UCGED=5, and it only
+                        // supports it in EUTRAN mode
+                        rat = uCellPrivateGetActiveRat(pInstance);
+                        if (U_CELL_PRIVATE_RAT_IS_EUTRAN(rat)) {
+                            errorCode = getRadioParamsUcged5(atHandle, pRadioParameters);
+                        } else {
+                            // Can't use AT+UCGED, that's all we can get
+                            errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+                        }
                     } else {
-                        // Can't use AT+UCGED, that's all we can get
-                        errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
-                    }
-                } else {
-                    // The AT+UCGED=2 formats are module-specific
-                    switch (pInstance->pModule->moduleType) {
-                        case U_CELL_MODULE_TYPE_SARA_R5:
-                            errorCode = getRadioParamsUcged2SaraR5(atHandle, pRadioParameters);
-                            break;
-                        case U_CELL_MODULE_TYPE_SARA_R422:
-                            errorCode = getRadioParamsUcged2SaraR422(atHandle, pRadioParameters);
-                            break;
-                        case U_CELL_MODULE_TYPE_LARA_R6:
-                            errorCode = getRadioParamsUcged2LaraR6(atHandle, pRadioParameters);
-                            break;
-                        default:
-                            break;
+                        // The AT+UCGED=2 formats are module-specific
+                        switch (pInstance->pModule->moduleType) {
+                            case U_CELL_MODULE_TYPE_SARA_R5:
+                                errorCode = getRadioParamsUcged2SaraR5(atHandle, pRadioParameters);
+                                break;
+                            case U_CELL_MODULE_TYPE_SARA_R422:
+                                errorCode = getRadioParamsUcged2SaraR422(atHandle, pRadioParameters);
+                                break;
+                            case U_CELL_MODULE_TYPE_LARA_R6:
+                                errorCode = getRadioParamsUcged2LaraR6(atHandle, pRadioParameters);
+                                break;
+                            default:
+                                break;
+                        }
                     }
                 }
             }
 
             if (errorCode == 0) {
                 uPortLog("U_CELL_INFO: radio parameters refreshed:\n");
-                uPortLog("             RSSI:    %d dBm\n", pRadioParameters->rssiDbm);
-                uPortLog("             RSRP:    %d dBm\n", pRadioParameters->rsrpDbm);
-                uPortLog("             RSRQ:    %d dB\n", pRadioParameters->rsrqDb);
-                uPortLog("             RxQual:  %d\n", pRadioParameters->rxQual);
-                uPortLog("             cell ID: %d\n", pRadioParameters->cellId);
-                uPortLog("             EARFCN:  %d\n", pRadioParameters->earfcn);
+                uPortLog("             RSSI:             %d dBm\n", pRadioParameters->rssiDbm);
+                uPortLog("             RSRP:             %d dBm\n", pRadioParameters->rsrpDbm);
+                uPortLog("             RSRQ:             %d dB\n", pRadioParameters->rsrqDb);
+                uPortLog("             RxQual:           %d\n", pRadioParameters->rxQual);
+                uPortLog("             logical cell ID:  0x%08x\n", pRadioParameters->cellIdLogical);
+                uPortLog("             physical cell ID: %d\n", pRadioParameters->cellIdPhysical);
+                uPortLog("             EARFCN:           %d\n", pRadioParameters->earfcn);
                 if (pRadioParameters->snrDb != 0x7FFFFFFF) {
-                    uPortLog("             SNR:     %d\n", pRadioParameters->snrDb);
+                    uPortLog("             SNR:              %d\n", pRadioParameters->snrDb);
                 }
             } else {
                 uPortLog("U_CELL_INFO: unable to refresh radio parameters.\n");
@@ -677,7 +767,8 @@ int32_t uCellInfoGetRsrpDbm(uDeviceHandle_t cellHandle)
         U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
 
         pInstance = pUCellPrivateGetInstance(cellHandle);
-        if (pInstance != NULL) {
+        if ((pInstance != NULL) &&
+            (pInstance->pModule->moduleType != U_CELL_MODULE_TYPE_LENA_R8)) {
             errorCodeOrValue = pInstance->radioParameters.rsrpDbm;
         }
 
@@ -700,7 +791,8 @@ int32_t uCellInfoGetRsrqDb(uDeviceHandle_t cellHandle)
         U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
 
         pInstance = pUCellPrivateGetInstance(cellHandle);
-        if (pInstance != NULL) {
+        if ((pInstance != NULL) &&
+            (pInstance->pModule->moduleType != U_CELL_MODULE_TYPE_LENA_R8)) {
             errorCodeOrValue = pInstance->radioParameters.rsrqDb;
         }
 
@@ -801,34 +893,36 @@ int32_t uCellInfoGetSnrDb(uDeviceHandle_t cellHandle, int32_t *pSnrDb)
         if ((pInstance != NULL) && (pSnrDb != NULL)) {
             pRadioParameters = &(pInstance->radioParameters);
             errorCode = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
-            rat = uCellPrivateGetActiveRat(pInstance);
-            if ((rat == U_CELL_NET_RAT_GSM_GPRS_EGPRS) ||
-                (rat == U_CELL_NET_RAT_EGPRS)) {
-                // Don't have SNR in 2G, just calculate it from RSSI and RSRP
-                errorCode = (int32_t) U_CELL_ERROR_VALUE_OUT_OF_RANGE;
-                // SNR = RSRP / (RSSI - RSRP).
-                if ((pRadioParameters->rssiDbm != 0) &&
-                    (pRadioParameters->rssiDbm <= pRadioParameters->rsrpDbm)) {
-                    *pSnrDb = INT_MAX;
-                    errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
-                } else if ((pRadioParameters->rssiDbm != 0) && (pRadioParameters->rsrpDbm != 0)) {
-                    int32_t ix = pRadioParameters->rssiDbm - (pRadioParameters->rsrpDbm + 1);
-                    if (ix >= 0) {
-                        const signed char snrLut[] = {6, 2, 0, -2, -3, -5, -6, -7, -8, -10};
-                        *pSnrDb = (ix < (int32_t) sizeof(snrLut)) ? snrLut[ix] : (- ix - 1);
+            if (pInstance->pModule->moduleType != U_CELL_MODULE_TYPE_LENA_R8) {
+                rat = uCellPrivateGetActiveRat(pInstance);
+                if ((rat == U_CELL_NET_RAT_GSM_GPRS_EGPRS) ||
+                    (rat == U_CELL_NET_RAT_EGPRS)) {
+                    // Don't have SNR in 2G, just calculate it from RSSI and RSRP
+                    errorCode = (int32_t) U_CELL_ERROR_VALUE_OUT_OF_RANGE;
+                    // SNR = RSRP / (RSSI - RSRP).
+                    if ((pRadioParameters->rssiDbm != 0) &&
+                        (pRadioParameters->rssiDbm <= pRadioParameters->rsrpDbm)) {
+                        *pSnrDb = INT_MAX;
                         errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+                    } else if ((pRadioParameters->rssiDbm != 0) && (pRadioParameters->rsrpDbm != 0)) {
+                        int32_t ix = pRadioParameters->rssiDbm - (pRadioParameters->rsrpDbm + 1);
+                        if (ix >= 0) {
+                            const signed char snrLut[] = {6, 2, 0, -2, -3, -5, -6, -7, -8, -10};
+                            *pSnrDb = (ix < (int32_t) sizeof(snrLut)) ? snrLut[ix] : (- ix - 1);
+                            errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+                        }
                     }
-                }
-            } else {
-                if (U_CELL_PRIVATE_HAS(pInstance->pModule,
-                                       U_CELL_PRIVATE_FEATURE_SNR_REPORTED)) {
-                    errorCode = (int32_t) U_ERROR_COMMON_NOT_FOUND;
-                    if (pRadioParameters->snrDb != 0x7FFFFFFF) {
-                        // If we have a stored SNIR value that we've been
-                        // able to read directly out of the module, then
-                        // report that
-                        *pSnrDb = pRadioParameters->snrDb;
-                        errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+                } else {
+                    if (U_CELL_PRIVATE_HAS(pInstance->pModule,
+                                           U_CELL_PRIVATE_FEATURE_SNR_REPORTED)) {
+                        errorCode = (int32_t) U_ERROR_COMMON_NOT_FOUND;
+                        if (pRadioParameters->snrDb != 0x7FFFFFFF) {
+                            // If we have a stored SNIR value that we've been
+                            // able to read directly out of the module, then
+                            // report that
+                            *pSnrDb = pRadioParameters->snrDb;
+                            errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+                        }
                     }
                 }
             }
@@ -841,7 +935,7 @@ int32_t uCellInfoGetSnrDb(uDeviceHandle_t cellHandle, int32_t *pSnrDb)
 }
 
 // Get the cell ID.
-int32_t uCellInfoGetCellId(uDeviceHandle_t cellHandle)
+U_DEPRECATED int32_t uCellInfoGetCellId(uDeviceHandle_t cellHandle)
 {
     int32_t errorCodeOrValue = (int32_t) U_ERROR_COMMON_NOT_INITIALISED;
     uCellPrivateInstance_t *pInstance;
@@ -853,13 +947,30 @@ int32_t uCellInfoGetCellId(uDeviceHandle_t cellHandle)
         pInstance = pUCellPrivateGetInstance(cellHandle);
         errorCodeOrValue = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
         if (pInstance != NULL) {
-            errorCodeOrValue = pInstance->radioParameters.cellId;
+            if ((pInstance->radioParameters.cellIdPhysical >= 0) &&
+                (pInstance->pModule->moduleType != U_CELL_MODULE_TYPE_LENA_R8)) {
+                errorCodeOrValue = pInstance->radioParameters.cellIdPhysical;
+            } else {
+                errorCodeOrValue = pInstance->radioParameters.cellIdLogical;
+            }
         }
 
         U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
     }
 
     return errorCodeOrValue;
+}
+
+// Get the logical cell ID.
+int32_t uCellInfoGetCellIdLogical(uDeviceHandle_t cellHandle)
+{
+    return getCellId(cellHandle, true);
+}
+
+// Get the physical cell ID.
+int32_t uCellInfoGetCellIdPhysical(uDeviceHandle_t cellHandle)
+{
+    return getCellId(cellHandle, false);
 }
 
 // Get the EARFCN.
@@ -875,7 +986,10 @@ int32_t uCellInfoGetEarfcn(uDeviceHandle_t cellHandle)
         pInstance = pUCellPrivateGetInstance(cellHandle);
         errorCodeOrValue = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
         if (pInstance != NULL) {
-            errorCodeOrValue = pInstance->radioParameters.earfcn;
+            errorCodeOrValue = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
+            if (pInstance->pModule->moduleType != U_CELL_MODULE_TYPE_LENA_R8) {
+                errorCodeOrValue = pInstance->radioParameters.earfcn;
+            }
         }
 
         U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
@@ -995,8 +1109,8 @@ int32_t uCellInfoGetManufacturerStr(uDeviceHandle_t cellHandle,
         pInstance = pUCellPrivateGetInstance(cellHandle);
         errorCodeOrSize = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
         if ((pInstance != NULL) && (pStr != NULL) && (size > 0)) {
-            errorCodeOrSize = getString(pInstance->atHandle, "AT+CGMI",
-                                        pStr, size);
+            errorCodeOrSize = uCellPrivateGetIdStr(pInstance->atHandle, "AT+CGMI",
+                                                   pStr, size);
         }
 
         U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
@@ -1019,8 +1133,8 @@ int32_t uCellInfoGetModelStr(uDeviceHandle_t cellHandle,
         pInstance = pUCellPrivateGetInstance(cellHandle);
         errorCodeOrSize = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
         if ((pInstance != NULL) && (pStr != NULL) && (size > 0)) {
-            errorCodeOrSize = getString(pInstance->atHandle, "AT+CGMM",
-                                        pStr, size);
+            errorCodeOrSize = uCellPrivateGetIdStr(pInstance->atHandle, "AT+CGMM",
+                                                   pStr, size);
         }
 
         U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
@@ -1044,8 +1158,8 @@ int32_t uCellInfoGetFirmwareVersionStr(uDeviceHandle_t cellHandle,
         errorCodeOrSize = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
         if ((pInstance != NULL) && (pStr != NULL) && (size > 0)) {
             // Use ATI9 instead of AT+CGMR as it contains more information
-            errorCodeOrSize = getString(pInstance->atHandle, "ATI9",
-                                        pStr, size);
+            errorCodeOrSize = uCellPrivateGetIdStr(pInstance->atHandle, "ATI9",
+                                                   pStr, size);
         }
 
         U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
@@ -1057,98 +1171,31 @@ int32_t uCellInfoGetFirmwareVersionStr(uDeviceHandle_t cellHandle,
 // Get the UTC time according to cellular.
 int64_t uCellInfoGetTimeUtc(uDeviceHandle_t cellHandle)
 {
-    int64_t errorCodeOrValue = (int64_t) U_ERROR_COMMON_NOT_INITIALISED;
+    int64_t errorCodeOrUtcTime = (int64_t) U_ERROR_COMMON_NOT_INITIALISED;
     uCellPrivateInstance_t *pInstance;
-    uAtClientHandle_t atHandle;
-    int64_t timeUtc;
-    char timezoneSign = 0;
-    char buffer[32];
-    struct tm timeInfo;
-    int32_t bytesRead;
-    size_t offset = 0;
+    int32_t timeZoneSeconds = 0;
 
     if (gUCellPrivateMutex != NULL) {
 
         U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
 
         pInstance = pUCellPrivateGetInstance(cellHandle);
-        errorCodeOrValue = (int64_t) U_ERROR_COMMON_INVALID_PARAMETER;
+        errorCodeOrUtcTime = (int64_t) U_ERROR_COMMON_INVALID_PARAMETER;
         if (pInstance != NULL) {
-            atHandle = pInstance->atHandle;
-            uAtClientLock(atHandle);
-            uAtClientCommandStart(atHandle, "AT+CCLK?");
-            uAtClientCommandStop(atHandle);
-            uAtClientResponseStart(atHandle, "+CCLK:");
-            bytesRead = uAtClientReadString(atHandle, buffer,
-                                            sizeof(buffer), false);
-            uAtClientResponseStop(atHandle);
-            errorCodeOrValue = uAtClientUnlock(atHandle);
-            if ((bytesRead >= 17) && (errorCodeOrValue == 0)) {
-                errorCodeOrValue = (int64_t) U_ERROR_COMMON_UNKNOWN;
-                uPortLog("U_CELL_INFO: time is %s.\n", buffer);
-                // The format of the returned string is
-                // "yy/MM/dd,hh:mm:ss+TZ" but the +TZ may be omitted
-                // Two-digit year converted to years since 1900
-                offset = 0;
-                buffer[offset + 2] = 0;
-                timeInfo.tm_year = atoi(&(buffer[offset])) + 2000 - 1900;
-                // Months converted to months since January
-                offset = 3;
-                buffer[offset + 2] = 0;
-                timeInfo.tm_mon = atoi(&(buffer[offset])) - 1;
-                // Day of month
-                offset = 6;
-                buffer[offset + 2] = 0;
-                timeInfo.tm_mday = atoi(&(buffer[offset]));
-                // Hours since midnight
-                offset = 9;
-                buffer[offset + 2] = 0;
-                timeInfo.tm_hour = atoi(&(buffer[offset]));
-                // Minutes after the hour
-                offset = 12;
-                buffer[offset + 2] = 0;
-                timeInfo.tm_min = atoi(&(buffer[offset]));
-                // Seconds after the hour
-                // ...but, if there is timezone information,
-                // save it before we obliterate the sign
-                if (bytesRead >= 20) {
-                    timezoneSign = buffer[17];
-                }
-                offset = 15;
-                buffer[offset + 2] = 0;
-                timeInfo.tm_sec = atoi(&(buffer[offset]));
-                // Get the time in seconds from this
-                timeUtc = mktime64(&timeInfo);
-                offset = 17;
-                if ((timeUtc >= 0) && (bytesRead >= 20) &&
-                    ((timezoneSign == '+') || (timezoneSign == '-'))) {
-                    // There's a timezone, expressed in 15 minute intervals,
-                    // subtract it to get UTC
-                    // Put the timezone sign back so that atoi() can handle it
-                    buffer[offset] = timezoneSign;
-                    buffer[offset + 3] = 0;
-                    timeUtc -= atoi(&(buffer[offset])) * 15 * 60;
-                }
-
-                if (timeUtc >= 0) {
-                    errorCodeOrValue = timeUtc;
-                    uPortLog("U_CELL_INFO: UTC time is %d.\n", (int32_t) errorCodeOrValue);
-                } else {
-                    uPortLog("U_CELL_INFO: unable to calculate UTC time.\n");
-                }
-            } else {
-                errorCodeOrValue = (int64_t) U_CELL_ERROR_AT;
-                uPortLog("U_CELL_INFO: unable to read time with AT+CCLK.\n");
+            errorCodeOrUtcTime = getTimeAndTimeZone(pInstance->atHandle,
+                                                    &timeZoneSeconds);
+            if (errorCodeOrUtcTime >= 0) {
+                errorCodeOrUtcTime -= timeZoneSeconds;
             }
         }
 
         U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
     }
 
-    return errorCodeOrValue;
+    return errorCodeOrUtcTime;
 }
 
-/* Get the UTC time string according to cellular */
+// Get the UTC time string according to cellular.
 int32_t uCellInfoGetTimeUtcStr(uDeviceHandle_t cellHandle, char *pStr, size_t size)
 {
     int32_t sizeOrErrorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
@@ -1194,13 +1241,39 @@ int32_t uCellInfoGetTimeUtcStr(uDeviceHandle_t cellHandle, char *pStr, size_t si
     return sizeOrErrorCode;
 }
 
+// Get the local time according to cellular.
+int64_t uCellInfoGetTime(uDeviceHandle_t cellHandle, int32_t *pTimeZoneSeconds)
+{
+    int64_t errorCodeOrTime = (int64_t) U_ERROR_COMMON_NOT_INITIALISED;
+    uCellPrivateInstance_t *pInstance;
+    int32_t timeZoneSeconds = 0;
+
+    if (gUCellPrivateMutex != NULL) {
+
+        U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
+
+        pInstance = pUCellPrivateGetInstance(cellHandle);
+        errorCodeOrTime = (int64_t) U_ERROR_COMMON_INVALID_PARAMETER;
+        if (pInstance != NULL) {
+            errorCodeOrTime = getTimeAndTimeZone(pInstance->atHandle,
+                                                 &timeZoneSeconds);
+            if ((errorCodeOrTime >= 0) && (pTimeZoneSeconds != NULL)) {
+                *pTimeZoneSeconds = timeZoneSeconds;
+            }
+        }
+
+        U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
+    }
+
+    return errorCodeOrTime;
+}
+
 // Determine if RTS flow control is enabled.
 bool uCellInfoIsRtsFlowControlEnabled(uDeviceHandle_t cellHandle)
 {
     bool isEnabled = false;
     uCellPrivateInstance_t *pInstance;
-    int32_t atStreamHandle;
-    uAtClientStream_t atStreamType = U_AT_CLIENT_STREAM_TYPE_MAX;
+    uAtClientStreamHandle_t stream = U_AT_CLIENT_STREAM_HANDLE_DEFAULTS;
     uDeviceSerial_t *pDeviceSerial;
 
     if (gUCellPrivateMutex != NULL) {
@@ -1209,13 +1282,13 @@ bool uCellInfoIsRtsFlowControlEnabled(uDeviceHandle_t cellHandle)
 
         pInstance = pUCellPrivateGetInstance(cellHandle);
         if (pInstance != NULL) {
-            atStreamHandle = uAtClientStreamGet(pInstance->atHandle, &atStreamType);
-            switch (atStreamType) {
+            uAtClientStreamGetExt(pInstance->atHandle, &stream);
+            switch (stream.type) {
                 case U_AT_CLIENT_STREAM_TYPE_UART:
-                    isEnabled = uPortUartIsRtsFlowControlEnabled(atStreamHandle);
+                    isEnabled = uPortUartIsRtsFlowControlEnabled(stream.handle.int32);
                     break;
                 case U_AT_CLIENT_STREAM_TYPE_VIRTUAL_SERIAL:
-                    pDeviceSerial = (uDeviceSerial_t *) atStreamHandle;
+                    pDeviceSerial = stream.handle.pDeviceSerial;
                     isEnabled = pDeviceSerial->isRtsFlowControlEnabled(pDeviceSerial);
                     break;
                 default:
@@ -1234,8 +1307,7 @@ bool uCellInfoIsCtsFlowControlEnabled(uDeviceHandle_t cellHandle)
 {
     bool isEnabled = false;
     uCellPrivateInstance_t *pInstance;
-    int32_t atStreamHandle;
-    uAtClientStream_t atStreamType = U_AT_CLIENT_STREAM_TYPE_MAX;
+    uAtClientStreamHandle_t stream = U_AT_CLIENT_STREAM_HANDLE_DEFAULTS;
     uDeviceSerial_t *pDeviceSerial;
 
     if (gUCellPrivateMutex != NULL) {
@@ -1244,13 +1316,13 @@ bool uCellInfoIsCtsFlowControlEnabled(uDeviceHandle_t cellHandle)
 
         pInstance = pUCellPrivateGetInstance(cellHandle);
         if (pInstance != NULL) {
-            atStreamHandle = uAtClientStreamGet(pInstance->atHandle, &atStreamType);
-            switch (atStreamType) {
+            uAtClientStreamGetExt(pInstance->atHandle, &stream);
+            switch (stream.type) {
                 case U_AT_CLIENT_STREAM_TYPE_UART:
-                    isEnabled = uPortUartIsCtsFlowControlEnabled(atStreamHandle);
+                    isEnabled = uPortUartIsCtsFlowControlEnabled(stream.handle.int32);
                     break;
                 case U_AT_CLIENT_STREAM_TYPE_VIRTUAL_SERIAL:
-                    pDeviceSerial = (uDeviceSerial_t *) atStreamHandle;
+                    pDeviceSerial = stream.handle.pDeviceSerial;
                     isEnabled = pDeviceSerial->isCtsFlowControlEnabled(pDeviceSerial);
                     break;
                 default:

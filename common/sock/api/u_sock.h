@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -47,7 +47,14 @@ extern "C" {
  * define #U_SOCK_DESCRIPTOR_SET_SIZE.  A limitation may also be
  * applied by the underlying implementation.
  */
-# define U_SOCK_MAX_NUM_SOCKETS 7
+
+// *** UCX WORKAROUND FIX ***
+// Lower value for ucx required
+# ifdef U_UCONNECT_GEN2
+#  define U_SOCK_MAX_NUM_SOCKETS 3
+# else
+#  define U_SOCK_MAX_NUM_SOCKETS 7
+# endif
 #endif
 
 #ifndef U_SOCK_DEFAULT_RECEIVE_TIMEOUT_MS
@@ -732,7 +739,6 @@ int32_t uSockSelect(int32_t maxDescriptor,
                     uSockDescriptorSet_t *pExceptDescriptorSet,
                     int32_t timeMs);
 
-
 /** Get the number of bytes sent by the socket
  * @param descriptor    the descriptor of the socket to get the sent bytes
  *
@@ -790,7 +796,6 @@ int32_t uSockGetLocalAddress(uSockDescriptor_t descriptor,
  */
 int32_t uSockGetHostByName(uDeviceHandle_t devHandle, const char *pHostName,
                            uSockIpAddress_t *pHostIpAddress);
-
 
 /* ----------------------------------------------------------------
  * FUNCTIONS: ADDRESS CONVERSION
@@ -873,6 +878,18 @@ int32_t uSockDomainGetPort(char *pDomainString);
  *                      modified domain name.
  */
 char *pUSockDomainRemovePort(char *pDomainString);
+
+/* ----------------------------------------------------------------
+ * FUNCTIONS: FOR INTERNAL USE ONLY
+ * -------------------------------------------------------------- */
+
+/** Internally, the sockets code sets up a couple of mutexes that
+ * are intended never to be free'd, for thread-safe operation.
+ * This function is used by the ubxlib test code to free those
+ * mutexes, when it is known to be safe to do so, in order to
+ * make the memory sums add up, or minus down.
+ */
+void uSockFree();
 
 #ifdef __cplusplus
 }

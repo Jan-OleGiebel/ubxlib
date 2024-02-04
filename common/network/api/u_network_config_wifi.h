@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,22 +46,57 @@
  * irrespective of whether Wifi is used there.
  */
 
-/** The network configuration for Wifi.
+/* NOTE TO MAINTAINERS: if you change this enum you will
+ * need to change u-blox,ubxlib-network-wifi.yaml over in
+ * /port/platform/zephyr/dts/bindings to match  and you will also
+ * need to update the table in the Zephyr u_port_board_cfg.c file
+ * that maps string to enum.
+ */
+typedef enum {
+    U_WIFI_MODE_FORCE_INT32 = 0x7FFFFFFF, /**< Force this to be a 32-bit
+                                               enum since the construction
+                                               in the Zephyr
+                                               u_port_board_cfg.c requires
+                                               that. */
+    U_WIFI_MODE_STA = 0, /**< Wifi station */
+    U_WIFI_MODE_AP,      /**< Wifi access point */
+    U_WIFI_MODE_STA_AP,  /**< Station and access point */
+    U_WIFI_MODE_NONE     /**< Inactive */
+} uNetworkWifiMode_t;
+
+/* NOTE TO MAINTAINERS: if you change this structure you will
+ * need to change u-blox,ubxlib-network-wifi.yaml over in
+ * /port/platform/zephyr/dts/bindings to match and you may also
+ * need to change the code in the Zephyr u_port_board_cfg.c file
+ * that parses the values.
+ */
+/** The network configuration for Wifi station and access point.
  */
 typedef struct {
     uNetworkCfgVersion_t version; /**< version of this network
-                                       configuration; allow your
-                                       compiler to initialise this
-                                       to zero unless otherwise
-                                       specified below. */
-    uNetworkType_t type;     /**< for error checking purposes. */
-    const char *pSsid;       /**< the access point SSID to connect */
-    int32_t authentication;  /**< the access point authentication mode. Values are:
-                                  1: Open (No authentication)
-                                  2: WPA/WPA2/WPA3-PSK
-                                  6: WPA2/WPA3-PSK
-                                  7: WPA3-PSK */
-    const char *pPassPhrase; /**< WPA/WPA2/WPA3 passphrase - should be NULL for open */
+                                     configuration; allow your
+                                     compiler to initialise this
+                                     to zero unless otherwise
+                                     specified below. */
+    uNetworkType_t type;          /**< for error checking purposes. */
+    const char *pSsid;            /**< the access point SSID for a station to connect to
+                                     Can be set to NULL to enforce use of previously
+                                     saved credentials. */
+    int32_t authentication;       /**< authentication mode for the station. Values are:
+                                     1: Open (No authentication)
+                                     2: WPA/WPA2/WPA3-PSK
+                                     6: WPA2/WPA3-PSK
+                                     7: WPA3-PSK */
+    const char *pPassPhrase;      /**< WPA/WPA2/WPA3 passphrase - should be NULL for open */
+    const char *pHostName;        /**< the network host name of the Wifi device.
+                                     When NULL a default name combined of the module
+                                     type and mac address will be used. */
+    uNetworkWifiMode_t mode;      /**< mode in which the Wifi module should be started. */
+    const char *pApSssid;         /**< SSID for the access point when applicable. */
+    int32_t apAuthentication;     /**< access point authentication mode. */
+    const char *pApPassPhrase;    /**< access point WPA/WPA2/WPA3 passphrase.
+                                       Should be NULL for open. */
+    const char *pApIpAddress;     /**< ip address of the access point. */
     /* This is the end of version 0 of this
        structure: should any fields be added to
        this structure in future they must be

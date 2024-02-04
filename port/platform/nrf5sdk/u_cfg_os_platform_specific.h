@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,11 +31,14 @@
  * COMPILE-TIME MACROS FOR NRF52: HEAP
  * -------------------------------------------------------------- */
 
-/** Not stricty speaking part of the OS but there's nowhere better
- * to put this.  Set this to 1 if the C library does not free memory
+/** /deprecated Not stricty speaking part of the OS but there's nowhere
+ * better to put this. Set this to 1 if the C library does not free memory
  * that it has alloced internally when a task is deleted.
  * For instance, newlib when it is compiled in a certain way
  * does this on some platforms.
+ *
+ * This macro is retained for compatibility purposes but is now
+ * ALWAYS SET TO 0 and may be removed in future.
  *
  * There is a down-side to setting this to 1, which is that URCs
  * received from a module will not be printed-out by the AT client

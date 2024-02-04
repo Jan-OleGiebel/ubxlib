@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -12,25 +12,40 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * Copyright 2023 Siemens AG for zephyr v3.4.0 spi api change fix
  */
 
 /** @file
  * @brief Implementation of the port SPI API for the Zephyr platform.
  */
 
+#include <version.h>
+
+#if KERNEL_VERSION_NUMBER >= ZEPHYR_VERSION(3,1,0)
+#include <zephyr/types.h>
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/devicetree/spi.h>
+#else
 #include <zephyr/types.h>
 #include <kernel.h>
+#include <device.h>
 #include <drivers/spi.h>
 #include <drivers/gpio.h>
 #include <devicetree/spi.h>
+#endif
 
-#include <device.h>
 #include <soc.h>
 
 #include "stddef.h"
 #include "stdint.h"
 #include "stdbool.h"
 #include "string.h"
+
+#include "u_compiler.h" // U_ATOMIC_XXX() macros
 
 #include "u_error_common.h"
 
@@ -39,7 +54,7 @@
 #include "u_port_gpio.h"
 #include "u_port_spi.h"
 #include "u_port_private.h"
-#include "version.h"
+#include "u_cfg_os_platform_specific.h"
 
 /* ----------------------------------------------------------------
  * COMPILE-TIME MACROS
@@ -94,6 +109,10 @@ static uPortMutexHandle_t gMutex = NULL;
 /** SPI configuration data.
  */
 static uPortSpiCfg_t gSpiCfg[U_PORT_SPI_MAX_NUM];
+
+/** Variable to keep track of the number of SPI interfaces open.
+ */
+static volatile int32_t gResourceAllocCount = 0;
 
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
@@ -291,9 +310,9 @@ static int32_t setSpiConfig(int32_t spi, uPortSpiCfg_t *pSpiCfg,
     const struct device *pGpioPort = NULL;
     gpio_flags_t gpioFlags = GPIO_OUTPUT;
 #endif
-    int32_t pinSelect;
     bool pinSelectInverted = ((pDevice->pinSelect & U_COMMON_SPI_PIN_SELECT_INVERTED) ==
                               U_COMMON_SPI_PIN_SELECT_INVERTED);
+    int32_t pinSelect = pDevice->pinSelect & ~U_COMMON_SPI_PIN_SELECT_INVERTED;
 
     if ((pDevice->mode & U_COMMON_SPI_MODE_CPOL_BIT_MASK) == U_COMMON_SPI_MODE_CPOL_BIT_MASK) {
         operation |= SPI_MODE_CPOL;
@@ -311,7 +330,16 @@ static int32_t setSpiConfig(int32_t spi, uPortSpiCfg_t *pSpiCfg,
     pSpiCfg->spiConfig.operation = operation;
     pSpiCfg->spiConfig.frequency = pDevice->frequencyHertz;
 
+#if KERNEL_VERSION_MAJOR < 3
     pSpiCfg->spiConfig.cs = NULL;
+    pSpiCfg->spiCsControl.gpio_dev = NULL;
+#else
+#   if KERNEL_VERSION_MAJOR == 3 && KERNEL_VERSION_MINOR < 4
+    pSpiCfg->spiConfig.cs = NULL;
+#   endif
+    pSpiCfg->spiCsControl.gpio.port = NULL;
+#endif
+
     if ((pDevice->pinSelect >= 0) || (pDevice->indexSelect >= 0)) {
 #if KERNEL_VERSION_MAJOR < 3
         pSpiCfg->spiCsControl.gpio_dev = pUPortPrivateGetGpioDevice(pinSelect);
@@ -331,24 +359,31 @@ static int32_t setSpiConfig(int32_t spi, uPortSpiCfg_t *pSpiCfg,
                                     &pSpiCfg->spiCsControl);
         if (errorCode == (int32_t) U_ERROR_COMMON_SUCCESS) {
             // pinSelect/index matched a CS pin for this SPI controller
+#if ((KERNEL_VERSION_MAJOR < 3) || (KERNEL_VERSION_MAJOR == 3 && KERNEL_VERSION_MINOR < 4))
             pSpiCfg->spiConfig.cs = &pSpiCfg->spiCsControl;
+#else
+            pSpiCfg->spiConfig.cs = pSpiCfg->spiCsControl;
+#endif
         } else if ((errorCode == (int32_t) U_ERROR_COMMON_NOT_FOUND) &&
                    (pDevice->pinSelect >= 0)) {
             errorCode = (int32_t) U_ERROR_COMMON_PLATFORM;
             // That didn't work but there is a pinSelect and we can just
             // hook-in any-old GPIO if we initialise it
-            pinSelect = pDevice->pinSelect & ~U_COMMON_SPI_PIN_SELECT_INVERTED;
             pGpioPort = pUPortPrivateGetGpioDevice(pinSelect);
             if (pGpioPort != NULL) {
                 pinSelect = pinSelect % GPIO_MAX_PINS_PER_PORT;
                 if (!pinSelectInverted) {
                     gpioFlags |= GPIO_ACTIVE_LOW;
                 }
-                if (gpio_pin_configure(pGpioPort, pinSelect, gpioFlags) == 0) {
+                if (gpio_pin_configure(pGpioPort, (gpio_pin_t) pinSelect, gpioFlags) == 0) {
                     pSpiCfg->spiCsControl.gpio.port = pGpioPort;
-                    pSpiCfg->spiCsControl.gpio.pin = pinSelect;
-                    pSpiCfg->spiCsControl.gpio.dt_flags = gpioFlags;
+                    pSpiCfg->spiCsControl.gpio.pin = (gpio_pin_t) pinSelect;
+                    pSpiCfg->spiCsControl.gpio.dt_flags = (gpio_dt_flags_t) gpioFlags;
+#if ((KERNEL_VERSION_MAJOR < 3) || (KERNEL_VERSION_MAJOR == 3 && KERNEL_VERSION_MINOR < 4))
                     pSpiCfg->spiConfig.cs = &pSpiCfg->spiCsControl;
+#else
+                    pSpiCfg->spiConfig.cs = pSpiCfg->spiCsControl;
+#endif
                     errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
                 }
             }
@@ -362,6 +397,12 @@ static int32_t setSpiConfig(int32_t spi, uPortSpiCfg_t *pSpiCfg,
                 offsetDuration = pDevice->stopOffsetNanoseconds;
             }
             pSpiCfg->spiCsControl.delay = offsetDuration / 1000;
+#if ((KERNEL_VERSION_MAJOR < 3) || (KERNEL_VERSION_MAJOR == 3 && KERNEL_VERSION_MINOR < 4))
+            pSpiCfg->spiConfig.cs = &pSpiCfg->spiCsControl;
+#else
+            pSpiCfg->spiConfig.cs = pSpiCfg->spiCsControl;
+#endif
+
         }
     }
 
@@ -418,42 +459,45 @@ int32_t uPortSpiOpen(int32_t spi, int32_t pinMosi, int32_t pinMiso,
         if ((spi >= 0) && (spi < sizeof(gSpiCfg) / sizeof(gSpiCfg[0])) &&
             (gSpiCfg[spi].pDevice == NULL) && controller &&
             (pinMosi < 0) && (pinMiso < 0) && (pinClk < 0)) {
+            handleOrErrorCode = (int32_t) U_ERROR_COMMON_PLATFORM;
             switch (spi) {
+#ifdef CONFIG_SPI
                 case 0:
-#if KERNEL_VERSION_MAJOR < 3
+# if KERNEL_VERSION_MAJOR < 3
                     pDevice = device_get_binding("SPI_0");
-#else
-                    pDevice = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(spi0));
-#endif
+# else
+                    pDevice = U_DEVICE_DT_GET_OR_NULL(spi0);
+# endif
                     break;
                 case 1:
-#if KERNEL_VERSION_MAJOR < 3
+# if KERNEL_VERSION_MAJOR < 3
                     pDevice = device_get_binding("SPI_1");
-#else
-                    pDevice = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(spi1));
-#endif
+# else
+                    pDevice = U_DEVICE_DT_GET_OR_NULL(spi1);
+# endif
                     break;
                 case 2:
-#if KERNEL_VERSION_MAJOR < 3
+# if KERNEL_VERSION_MAJOR < 3
                     pDevice = device_get_binding("SPI_2");
-#else
-                    pDevice = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(spi2));
-#endif
+# else
+                    pDevice = U_DEVICE_DT_GET_OR_NULL(spi2);
+# endif
                     break;
                 case 3:
-#if KERNEL_VERSION_MAJOR < 3
+# if KERNEL_VERSION_MAJOR < 3
                     pDevice = device_get_binding("SPI_3");
-#else
-                    pDevice = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(spi3));
-#endif
+# else
+                    pDevice = U_DEVICE_DT_GET_OR_NULL(spi3);
+# endif
                     break;
                 case 4:
-#if KERNEL_VERSION_MAJOR < 3
+# if KERNEL_VERSION_MAJOR < 3
                     pDevice = device_get_binding("SPI_4");
-#else
-                    pDevice = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(spi4));
-#endif
+# else
+                    pDevice = U_DEVICE_DT_GET_OR_NULL(spi4);
+# endif
                     break;
+#endif
                 default:
                     break;
             }
@@ -464,6 +508,7 @@ int32_t uPortSpiOpen(int32_t spi, int32_t pinMosi, int32_t pinMiso,
                     // Hook the device data structure into the entry
                     // to flag that it is in use
                     gSpiCfg[spi].pDevice = pDevice;
+                    U_ATOMIC_INCREMENT(&gResourceAllocCount);
                     // Return the SPI HW block number as the handle
                     handleOrErrorCode = spi;
                 }
@@ -487,6 +532,7 @@ void uPortSpiClose(int32_t handle)
             // Just set the device data structure to NULL to indicate that the device
             // is no longer in use
             gSpiCfg[handle].pDevice = NULL;
+            U_ATOMIC_DECREMENT(&gResourceAllocCount);
         }
 
         U_PORT_MUTEX_UNLOCK(gMutex);
@@ -537,7 +583,9 @@ int32_t uPortSpiControllerGetDevice(int32_t handle,
             pDevice->pinSelect = -1;
             pDevice->startOffsetNanoseconds = 0;
 #if KERNEL_VERSION_MAJOR >= 3
+#if ((KERNEL_VERSION_MAJOR == 3 && KERNEL_VERSION_MINOR < 4))
             if (pSpiCfg->spiConfig.cs != NULL) {
+#endif // ((KERNEL_VERSION_MAJOR == 3 && KERNEL_VERSION_MINOR < 4))
                 // Have a chip select pin, work out what it is
                 pDevice->pinSelect = uPortPrivateGetGpioPort(pSpiCfg->spiCsControl.gpio.port,
                                                              pSpiCfg->spiCsControl.gpio.pin);
@@ -545,8 +593,10 @@ int32_t uPortSpiControllerGetDevice(int32_t handle,
                     pDevice->pinSelect |= U_COMMON_SPI_PIN_SELECT_INVERTED;
                 }
                 pDevice->startOffsetNanoseconds = pSpiCfg->spiCsControl.delay * 1000;
+#if ((KERNEL_VERSION_MAJOR == 3 && KERNEL_VERSION_MINOR < 4))
             }
-#endif
+#endif // ((KERNEL_VERSION_MAJOR == 3 && KERNEL_VERSION_MINOR < 4))
+#endif // KERNEL_VERSION_MAJOR >= 3
             pDevice->stopOffsetNanoseconds = pDevice->startOffsetNanoseconds;
             pDevice->sampleDelayNanoseconds = 0; // Not an option in Zephyr
             pDevice->frequencyHertz = pSpiCfg->spiConfig.frequency;
@@ -684,6 +734,12 @@ int32_t uPortSpiControllerSendReceiveBlock(int32_t handle, const char *pSend,
     }
 
     return errorCodeOrReceiveSize;
+}
+
+// Get the number of SPI interfaces currently open.
+int32_t uPortSpiResourceAllocCount()
+{
+    return U_ATOMIC_GET(&gResourceAllocCount);
 }
 
 // End of file

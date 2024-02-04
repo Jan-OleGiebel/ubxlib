@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,9 +27,15 @@
  * configuration information, i.e. cellular or BLE/Wifi for short range).
  * These tests use the network API and the test configuration information
  * from the network API to provide the communication path.
+ *
  * IMPORTANT: see notes in u_cfg_test_platform_specific.h for the
  * naming rules that must be followed when using the U_PORT_TEST_FUNCTION()
  * macro.
+ *
+ * NOTE TO IMPLEMENTERS: the tests in here still do heap checking on each
+ * individual test and resource checking at the end, rather than resource
+ * checking throughout: this is because heap-checking allows more fine-grained
+ * checking and leaving the devices open between tests speeds things up.
  */
 
 #ifdef U_CFG_OVERRIDE
@@ -47,19 +53,23 @@
 #include "u_cfg_sw.h"
 #include "u_cfg_app_platform_specific.h"
 #include "u_cfg_test_platform_specific.h"
-#include "u_cfg_os_platform_specific.h"  // For #define U_CFG_OS_CLIB_LEAKS
+#include "u_cfg_os_platform_specific.h"
 
 #include "u_error_common.h"
 
 #include "u_port_clib_platform_specific.h" /* struct timeval in some cases. */
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"
 #include "u_port_event_queue.h"
+
+#include "u_test_util_resource_check.h"
 
 #include "u_network.h"                  // In order to provide a comms
 #include "u_network_test_shared_cfg.h"  // path for the socket
+
+#include "u_security_tls.h" // For uSecurityTlsCleanUp()
 
 #include "u_sock_errno.h" // For U_SOCK_EWOULDBLOCK
 #include "u_sock.h"
@@ -116,21 +126,13 @@
 /** A sensible maximum size for UDP packets sent over
  * the public internet when testing.
  */
-# define U_SOCK_TEST_MAX_UDP_PACKET_SIZE 500
-#endif
-
-#ifndef U_SOCK_TEST_MAX_TCP_READ_WRITE_SIZE
-/** The maximum TCP read/write size to use during testing.
- */
-# define U_SOCK_TEST_MAX_TCP_READ_WRITE_SIZE 1024
-#endif
-
-#ifndef U_SOCK_TEST_MIN_TCP_READ_WRITE_SIZE
-/** Sending just one byte doesn't always cause all
- * modules to actually send the data in a reasonable
- * time so set a sensible minimum here for testing.
- */
-# define U_SOCK_TEST_MIN_TCP_READ_WRITE_SIZE 128
+# ifdef U_UCONNECT_GEN2
+// *** UCX WORKAROUND FIX ***
+// Ucx can't handle large UDP packages for now
+#  define U_SOCK_TEST_MAX_UDP_PACKET_SIZE 256
+# else
+#  define U_SOCK_TEST_MAX_UDP_PACKET_SIZE 500
+# endif
 #endif
 
 #ifndef U_SOCK_TEST_NON_BLOCKING_TIME_MS
@@ -563,7 +565,7 @@ static int32_t doUdpEchoBasic(uSockDescriptor_t descriptor,
     U_PORT_TEST_ASSERT(pDataReceived != NULL);
 
     // Retry this a few times, don't want to fail due to a flaky link
-    for (size_t x = 0; (receivedSizeBytes != sendSizeBytes) &&
+    for (size_t x = 0; (receivedSizeBytes != (int32_t)sendSizeBytes) &&
          (x < U_SOCK_TEST_UDP_RETRIES); x++) {
         U_TEST_PRINT_LINE("echo testing UDP packet size %d byte(s), try %d.",
                           sendSizeBytes, x + 1);
@@ -576,7 +578,7 @@ static int32_t doUdpEchoBasic(uSockDescriptor_t descriptor,
             // Reset errno 'cos we're going to retry and subsequent things might be upset by it
             errno = 0;
         }
-        if (sentSizeBytes == sendSizeBytes) {
+        if (sentSizeBytes == (int32_t)sendSizeBytes) {
 #if U_CFG_ENABLE_LOGGING
             timeNowMs = (int32_t) uPortGetTickTimeMs();
 #endif
@@ -599,7 +601,7 @@ static int32_t doUdpEchoBasic(uSockDescriptor_t descriptor,
                 // Reset errno 'cos we're going to retry and subsequent things might be upset by it
                 errno = 0;
             }
-            if (receivedSizeBytes == sendSizeBytes) {
+            if (receivedSizeBytes == (int32_t)sendSizeBytes) {
                 U_PORT_TEST_ASSERT(memcmp(pSendData, pDataReceived +
                                           U_SOCK_TEST_GUARD_LENGTH_SIZE_BYTES,
                                           sendSizeBytes) == 0);
@@ -842,7 +844,7 @@ U_PORT_TEST_FUNCTION("[sock]", "sockAddressStrings")
                              strlen(buffer));
                 }
                 uPortLog(".\n");
-                U_PORT_TEST_ASSERT(errorCode == strlen(buffer));
+                U_PORT_TEST_ASSERT(errorCode == (int32_t)strlen(buffer));
                 U_PORT_TEST_ASSERT(strcmp(gTestAddressList[x].pAddressString,
                                           buffer) == 0);
             } else {
@@ -860,7 +862,7 @@ U_PORT_TEST_FUNCTION("[sock]", "sockAddressStrings")
                              buffer, strlen(buffer));
                 }
                 uPortLog(".\n");
-                U_PORT_TEST_ASSERT(errorCode == strlen(buffer));
+                U_PORT_TEST_ASSERT(errorCode == (int32_t)strlen(buffer));
                 U_PORT_TEST_ASSERT(strcmp(gTestAddressList[x].pAddressString,
                                           buffer) == 0);
             }
@@ -899,6 +901,8 @@ U_PORT_TEST_FUNCTION("[sock]", "sockAddressStrings")
     // heapUsed < 0 for the Zephyr case where the heap can look
     // like it increases (negative leak)
     U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 /** Basic UDP test.
@@ -913,7 +917,7 @@ U_PORT_TEST_FUNCTION("[sock]", "sockBasicUdp")
     uSockDescriptor_t descriptor;
     bool dataCallbackCalled;
     size_t sizeBytes;
-    bool success = false;
+    bool success;
     int32_t heapUsed;
     int32_t heapSockInitLoss = 0;
     int32_t heapXxxSockInitLoss = 0;
@@ -960,6 +964,7 @@ U_PORT_TEST_FUNCTION("[sock]", "sockBasicUdp")
 
         // Quite often nothing at all comes back so retry this
         // if that is the case
+        success = false;
         for (size_t retries = 2; !success && (retries > 0); retries--) {
             success = true;
             // Create a UDP socket
@@ -1018,7 +1023,7 @@ U_PORT_TEST_FUNCTION("[sock]", "sockBasicUdp")
                 sizeBytes = fix(sizeBytes, U_SOCK_TEST_MAX_UDP_PACKET_SIZE);
                 // Test max size
                 if (doUdpEchoBasic(descriptor, &remoteAddress,
-                                   gSendData, sizeBytes) != sizeBytes) {
+                                   gSendData, sizeBytes) != (int32_t)sizeBytes) {
                     success = false;
                 }
             }
@@ -1064,14 +1069,16 @@ U_PORT_TEST_FUNCTION("[sock]", "sockBasicUdp")
             U_PORT_TEST_ASSERT(uSockClose(descriptor) == 0);
             uSockCleanUp();
 
-            // Check for memory leaks
-            heapUsed -= uPortGetHeapFree();
-            U_TEST_PRINT_LINE("during this part of the test %d byte(s)"
-                              " were lost to sockets initialisation; we"
-                              " have leaked %d byte(s).",
-                              heapSockInitLoss + heapXxxSockInitLoss,
-                              heapUsed - (heapSockInitLoss + heapXxxSockInitLoss));
-            U_PORT_TEST_ASSERT(heapUsed <= heapSockInitLoss + heapXxxSockInitLoss);
+            if (uPortGetHeapFree() >= 0) {
+                // Check for memory leaks
+                heapUsed -= uPortGetHeapFree();
+                U_TEST_PRINT_LINE("during this part of the test %d byte(s)"
+                                  " were lost to sockets initialisation; we"
+                                  " have leaked %d byte(s).",
+                                  heapSockInitLoss + heapXxxSockInitLoss,
+                                  heapUsed - (heapSockInitLoss + heapXxxSockInitLoss));
+                U_PORT_TEST_ASSERT(heapUsed <= heapSockInitLoss + heapXxxSockInitLoss);
+            }
         }
     }
 
@@ -1222,7 +1229,7 @@ U_PORT_TEST_FUNCTION("[sock]", "sockBasicTcp")
                           sizeBytes, (int32_t) uPortGetTickTimeMs());
 
         // Check if the uSockTotalBytesSent() matches value of sizeBytes
-        U_PORT_TEST_ASSERT(uSockGetTotalBytesSent(descriptor) == sizeBytes);
+        U_PORT_TEST_ASSERT(uSockGetTotalBytesSent(descriptor) == (int32_t)sizeBytes);
 
         // ...and capture them all again afterwards
         pDataReceived = (char *) pUPortMalloc((sizeof(gSendData) - 1) +
@@ -1388,13 +1395,13 @@ U_PORT_TEST_FUNCTION("[sock]", "sockMaxNumSockets")
         // Now try to open one more and it should fail
         U_TEST_PRINT_LINE("opening one more, should fail.");
         descriptor[(sizeof(descriptor) /
-                                        sizeof(descriptor[0])) - 1] = openSocketAndUseIt(devHandle,
+                    sizeof(descriptor[0])) - 1] = openSocketAndUseIt(devHandle,
                                                                      &remoteAddress,
                                                                      U_SOCK_TYPE_DGRAM,
                                                                      U_SOCK_PROTOCOL_UDP,
                                                                      &heapXxxSockInitLoss);
         U_PORT_TEST_ASSERT(descriptor[(sizeof(descriptor) /
-                                                           sizeof(descriptor[0])) - 1] < 0);
+                                       sizeof(descriptor[0])) - 1] < 0);
         U_PORT_TEST_ASSERT(errno > 0);
         errno = 0;
 
@@ -2080,6 +2087,13 @@ U_PORT_TEST_FUNCTION("[sock]", "sockUdpEchoNonPingPong")
 
     // Repeat for all bearers
     for (uNetworkTestList_t *pTmp = pList; pTmp != NULL; pTmp = pTmp->pNext) {
+#ifdef U_UCONNECT_GEN2
+        // *** UCX WORKAROUND FIX ***
+        // Ucx can't handle large UDP packages for now so skip this test
+        if (pTmp->networkType == U_NETWORK_TYPE_WIFI) {
+            continue;
+        }
+#endif
         devHandle = *pTmp->pDevHandle;
         // Get the initial-ish heap
         heapUsed = uPortGetHeapFree();
@@ -2147,7 +2161,7 @@ U_PORT_TEST_FUNCTION("[sock]", "sockUdpEchoNonPingPong")
                                           " byte(s), send try %d.", y + 1,
                                           sizeBytes, z + 1);
                         if (uSockSendTo(descriptor, &remoteAddress,
-                                        gSendData + offset, sizeBytes) == sizeBytes) {
+                                        gSendData + offset, sizeBytes) == (int32_t)sizeBytes) {
                             success = true;
                             offset += sizeBytes;
                         } else {
@@ -2398,7 +2412,7 @@ U_PORT_TEST_FUNCTION("[sock]", "sockAsyncUdpEchoMayFailDueToInternetDatagramLoss
                                       sizeBytes, z + 1);
                     if (uSockSendTo(gTestConfig.descriptor,
                                     &remoteAddress, gSendData + offset,
-                                    sizeBytes) == sizeBytes) {
+                                    sizeBytes) == (int32_t)sizeBytes) {
                         success = true;
                         offset += sizeBytes;
                         y++;
@@ -2423,7 +2437,7 @@ U_PORT_TEST_FUNCTION("[sock]", "sockAsyncUdpEchoMayFailDueToInternetDatagramLoss
                               " totalling %d byte(s).", gTestConfig.packetsReceived,
                               gTestConfig.bytesReceived);
 
-            if (gTestConfig.packetsReceived == y) {
+            if ((int32_t)gTestConfig.packetsReceived == y) {
                 // Check that we reassembled everything
                 U_PORT_TEST_ASSERT(checkAgainstSentData(gSendData,
                                                         gTestConfig.bytesToSend,
@@ -2477,13 +2491,7 @@ U_PORT_TEST_FUNCTION("[sock]", "sockAsyncUdpEchoMayFailDueToInternetDatagramLoss
         // Free memory from event queues
         uPortEventQueueCleanUp();
 
-#if !U_CFG_OS_CLIB_LEAKS
-        // Check for memory leaks but only
-        // if we don't have a leaky C library:
-        // if we do there's no telling what
-        // it might have left hanging after
-        // the creation and deletion of the
-        // tasks above.
+        // Check for memory leaks
         heapUsed -= uPortGetHeapFree();
         U_TEST_PRINT_LINE("during this part of the test %d byte(s) of heap"
                           " were lost to the C library and %d byte(s) were"
@@ -2491,11 +2499,6 @@ U_PORT_TEST_FUNCTION("[sock]", "sockAsyncUdpEchoMayFailDueToInternetDatagramLoss
                           " %d byte(s).", heapSockInitLoss + heapXxxSockInitLoss,
                           heapUsed - (heapSockInitLoss + heapXxxSockInitLoss));
         U_PORT_TEST_ASSERT(heapUsed <= heapSockInitLoss + heapXxxSockInitLoss);
-#else
-        (void) heapUsed;
-        (void) heapSockInitLoss;
-        (void) heapXxxSockInitLoss;
-#endif
     }
 
     // Remove each network type
@@ -2727,24 +2730,13 @@ U_PORT_TEST_FUNCTION("[sock]", "sockAsyncTcpEcho")
         // Free memory
         uPortFree(gTestConfig.pBuffer);
 
-#if !U_CFG_OS_CLIB_LEAKS
-        // Check for memory leaks but only
-        // if we don't have a leaky C library:
-        // if we do there's no telling what
-        // it might have left hanging after
-        // the creation and deletion of the
-        // tasks above.
+        // Check for memory leaks
         heapUsed -= uPortGetHeapFree();
         U_TEST_PRINT_LINE("during this part of the test %d byte(s) were lost"
                           " to sockets initialisation; we have leaked %d byte(s).",
                           heapSockInitLoss + heapXxxSockInitLoss,
                           heapUsed - (heapSockInitLoss + heapXxxSockInitLoss));
         U_PORT_TEST_ASSERT(heapUsed <= heapSockInitLoss + heapXxxSockInitLoss);
-#else
-        (void) heapUsed;
-        (void) heapSockInitLoss;
-        (void) heapXxxSockInitLoss;
-#endif
     }
 
     // Remove each network type
@@ -2765,7 +2757,7 @@ U_PORT_TEST_FUNCTION("[sock]", "sockAsyncTcpEcho")
  */
 U_PORT_TEST_FUNCTION("[sock]", "sockCleanUp")
 {
-    int32_t y;
+    U_TEST_PRINT_LINE("cleaning up any outstanding resources.\n");
 
     osCleanup();
 
@@ -2774,23 +2766,15 @@ U_PORT_TEST_FUNCTION("[sock]", "sockCleanUp")
     // so must reset the handles here in case the
     // tests of one of the other APIs are coming next.
     uNetworkTestCleanUp();
+
+    uSockCleanUp();
+    // Clean-up the TLS security mutex
+    uSecurityTlsCleanUp();
+
     uDeviceDeinit();
-
-    y = uPortTaskStackMinFree(NULL);
-    if (y != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d byte(s)"
-                          " free at the end of these tests.", y);
-        U_PORT_TEST_ASSERT(y >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-    y = uPortGetHeapMinFree();
-    if (y >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free"
-                          " at the end of these tests.", y);
-        U_PORT_TEST_ASSERT(y >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 // End of file

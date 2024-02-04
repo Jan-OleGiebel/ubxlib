@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 u-blox
+ * Copyright 2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -55,6 +55,8 @@
 #include "u_port_os.h"
 #include "u_port_uart.h"
 
+#include "u_test_util_resource_check.h"
+
 #include "u_at_client.h"
 #include "u_short_range_pbuf.h"
 #include "u_short_range.h"
@@ -71,7 +73,6 @@
 #include "u_ble_gap.h"
 #include "u_ble_gatt.h"
 #include "u_ble_nus.h"
-
 
 /* ----------------------------------------------------------------
  * COMPILE-TIME MACROS
@@ -94,7 +95,7 @@
 #define HAS_RESPONSE (gPeerResponse[0] != 0)
 #define SERVER_FOUND (gPeerMac[0] != 0)
 // Connection wait time in seconds. The external server and client may be busy
-#define PEER_WAIT_TIME_S 100
+#define PEER_WAIT_TIME_S 180
 
 /* ----------------------------------------------------------------
  * TYPES
@@ -121,6 +122,11 @@ static uDeviceCfg_t gDeviceCfg = {
             .pinRxd = U_CFG_APP_PIN_SHORT_RANGE_RXD,
             .pinCts = U_CFG_APP_PIN_SHORT_RANGE_CTS,
             .pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS,
+#ifdef U_CFG_APP_UART_PREFIX
+            .pPrefix = U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX) // Relevant for Linux only
+#else
+            .pPrefix = NULL
+#endif
         }
     }
 };
@@ -139,11 +145,10 @@ static uBleGapAdvConfig_t gAdvCfg = {
     .advDataLength = 0
 };
 
-
 static char gPeerMac[U_SHORT_RANGE_BT_ADDRESS_SIZE] = {0};
 static char gPeerResponse[100] = {0};
 
-static int32_t gHeapStartSize;
+static int32_t gResourceCountStart;
 
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
@@ -171,7 +176,7 @@ static void peerIncoming(uint8_t *pValue, uint8_t valueSize)
 static void preamble(int32_t role)
 {
     uPortDeinit();
-    gHeapStartSize = uPortGetHeapFree();
+    gResourceCountStart = uTestUtilGetDynamicResourceCount();
     U_PORT_TEST_ASSERT(uPortInit() == 0);
     U_PORT_TEST_ASSERT(uDeviceInit() == 0);
     U_TEST_PRINT_LINE("initiating the module");
@@ -190,24 +195,15 @@ static void postamble()
     U_PORT_TEST_ASSERT(uDeviceClose(gDeviceHandle, false) == 0);
     uDeviceDeinit();
     uPortDeinit();
-#ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'ed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    int32_t heapUsed = gHeapStartSize - uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
-#endif
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    int32_t resourceCount = gResourceCountStart - uTestUtilGetDynamicResourceCount();
+    U_TEST_PRINT_LINE("we have leaked %d resource(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /* ----------------------------------------------------------------
  * PUBLIC FUNCTIONS
  * -------------------------------------------------------------- */
-
 
 /** BLE NUS client test.
  */
@@ -220,7 +216,8 @@ U_PORT_TEST_FUNCTION("[bleNus]", "bleNusClient")
         U_TEST_PRINT_LINE("try #%d", i + 1);
         U_PORT_TEST_ASSERT(uBleGapScan(gDeviceHandle,
                                        U_BLE_GAP_SCAN_DISCOVER_ALL_ONCE,
-                                       true, 10000,
+                                       true,
+                                       9500, // This value is due to the current fixed AT-timeout in ucx (10s)
                                        scanResponse) == 0);
     }
     U_PORT_TEST_ASSERT(SERVER_FOUND);
@@ -257,6 +254,7 @@ U_PORT_TEST_FUNCTION("[bleNus]", "bleNusClient")
 U_PORT_TEST_FUNCTION("[bleNus]", "bleNusServer")
 {
     int32_t x;
+    int32_t y;
     preamble(U_BLE_CFG_ROLE_PERIPHERAL);
     U_TEST_PRINT_LINE("init NUS Service");
     x = uBleNusInit(gDeviceHandle, NULL, peerIncoming);
@@ -267,11 +265,15 @@ U_PORT_TEST_FUNCTION("[bleNus]", "bleNusServer")
         uint8_t advData[32];
         uint8_t respData[32];
         gAdvCfg.pRespData = respData;
-        gAdvCfg.respDataLength = uBleNusSetAdvData(respData, sizeof(respData));
+        y = uBleNusSetAdvData(respData, sizeof(respData));
+        U_PORT_TEST_ASSERT(y >= 0);
+        gAdvCfg.respDataLength = (uint8_t)y;
         gAdvCfg.pAdvData = advData;
-        gAdvCfg.advDataLength = uBleGapSetAdvData(INT_SERVER_NAME,
-                                                  manufData, sizeof(manufData),
-                                                  advData, sizeof(advData));
+        y = uBleGapSetAdvData(INT_SERVER_NAME,
+                              manufData, sizeof(manufData),
+                              advData, sizeof(advData));
+        U_PORT_TEST_ASSERT(y >= 0);
+        gAdvCfg.advDataLength = (uint8_t)y;
         U_PORT_TEST_ASSERT(gAdvCfg.respDataLength > 0 && gAdvCfg.advDataLength > 0);
         U_TEST_PRINT_LINE("start advertising");
         U_PORT_TEST_ASSERT(uBleGapAdvertiseStart(gDeviceHandle, &gAdvCfg) == 0);

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,8 +39,8 @@
 #include "u_error_common.h"
 
 #include "u_cfg_sw.h"
-#include "u_port_heap.h"
 #include "u_port_os.h"
+#include "u_port_heap.h"
 #include "u_port_debug.h"
 #include "u_port_event_queue.h"
 #include "u_cfg_os_platform_specific.h"
@@ -60,7 +60,7 @@
 
 #define U_SHORT_RANGE_BT_ADDRESS_SIZE 14
 
-#define U_BLE_SPS_EVENT_STACK_SIZE 1536
+#define U_BLE_SPS_EVENT_STACK_SIZE 2048
 #define U_BLE_SPS_EVENT_PRIORITY (U_CFG_OS_PRIORITY_MAX - 5)
 
 /* ----------------------------------------------------------------
@@ -408,7 +408,7 @@ static void dataCallback(int32_t handle, int32_t channel, uShortRangePbufList_t 
                     }
 
                     if (bufferWasEmtpy) {
-                        bleSpsEvent_t event;
+                        bleSpsEvent_t event = {0};
                         event.channel = channel;
                         event.pInstance = pInstance;
                         uPortEventQueueSend(gBleSpsEventQueue, &event, sizeof(event));

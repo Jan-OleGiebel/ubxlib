@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,10 +42,7 @@
 #include "ctype.h"     // isprint()
 
 #include "u_cfg_sw.h"
-//lint -efile(766, u_cfg_os_platform_specific.h)
-// Suppress header file not used: one of the defines
-// in it (U_CFG_OS_CLIB_LEAKS) is.
-#include "u_cfg_os_platform_specific.h"  // For #define U_CFG_OS_CLIB_LEAKS
+#include "u_cfg_os_platform_specific.h"
 #include "u_cfg_app_platform_specific.h"
 #include "u_cfg_test_platform_specific.h"
 
@@ -56,6 +53,8 @@
 #include "u_port_os.h"
 #include "u_port_i2c.h"
 #include "u_port_spi.h"
+
+#include "u_test_util_resource_check.h"
 
 #ifdef U_CFG_TEST_CELL_MODULE_TYPE
 # include "u_cell_module_type.h"
@@ -132,12 +131,6 @@ typedef struct {
  */
 static const char gTestString[] = "Hello from u-blox.";
 
-//lint -esym(843, gSystemHeapLost) Suppress could be declared as const, which will be the
-// case if U_CFG_OS_CLIB_LEAKS is not defined.
-/** For tracking heap lost to memory  lost by the C library.
- */
-static size_t gSystemHeapLost = 0;
-
 /** One of the macro U_BLE_TEST_CFG_REMOTE_SPS_CENTRAL or U_BLE_TEST_CFG_REMOTE_SPS_PERIPHERAL
  * should be set to the address of the BLE test peer WITHOUT quotation marks, e.g.
  * U_BLE_TEST_CFG_REMOTE_SPS_CENTRAL=2462ABB6CC42p.  If none of the macros are
@@ -178,7 +171,6 @@ static const char gTestData[] =  "_____0000:012345678901234567890123456789012345
                                  "abcdefg";
 // Make sure the test data is not a multiple of the MTU
 // so we test packets smaller than MTU as well as MTU sized packets
-
 
 static volatile int32_t gConnHandle;
 static volatile int32_t gBytesReceived;
@@ -286,13 +278,6 @@ static void bleSpsCallback(int32_t channel, void *pParameters)
 {
     char buffer[100];
     int32_t length;
-# if U_CFG_OS_CLIB_LEAKS
-    // Calling C library functions from new tasks will
-    // allocate additional memory which, depending
-    // on the OS/system, may not be recovered;
-    // take account of that here.
-    int32_t heapClibLoss = uPortGetHeapFree();
-# endif
     (void)pParameters;
 
     U_PORT_TEST_ASSERT(channel == gChannel);
@@ -325,31 +310,15 @@ static void bleSpsCallback(int32_t channel, void *pParameters)
             }
         }
     } while (length > 0);
-# if U_CFG_OS_CLIB_LEAKS
-    // Take account of any heap lost through the
-    // library calls
-    gSystemHeapLost += (size_t) (unsigned) (heapClibLoss - uPortGetHeapFree());
-# endif
 }
 
 static void connectionCallback(int32_t connHandle, char *address, int32_t status,
                                int32_t channel, int32_t mtu, void *pParameters)
 {
-# if U_CFG_OS_CLIB_LEAKS
-    int32_t heapClibLoss;
-# endif
 
     (void)address;
     (void)mtu;
     (void)pParameters;
-
-# if U_CFG_OS_CLIB_LEAKS
-    // Calling C library functions from new tasks will
-    // allocate additional memory which, depending
-    // on the OS/system, may not be recovered;
-    // take account of that here.
-    heapClibLoss = uPortGetHeapFree();
-# endif
 
     if (status == (int32_t) U_BLE_SPS_CONNECTED) {
         gConnHandle = connHandle;
@@ -367,11 +336,6 @@ static void connectionCallback(int32_t connHandle, char *address, int32_t status
         uPortSemaphoreGive(gBleConnectionSem);
     }
 
-# if U_CFG_OS_CLIB_LEAKS
-    // Take account of any heap lost through the
-    // library calls
-    gSystemHeapLost += (size_t) (unsigned) (heapClibLoss - uPortGetHeapFree());
-# endif
 }
 #endif // #if defined(U_BLE_TEST_CFG_REMOTE_SPS_CENTRAL) || defined(U_BLE_TEST_CFG_REMOTE_SPS_PERIPHERAL)
 
@@ -400,11 +364,8 @@ static void networkStatusCallback(uDeviceHandle_t devHandle,
     U_PORT_TEST_ASSERT(netType < sizeof(gNetworkStatusCallbackParameters) /
                        sizeof(gNetworkStatusCallbackParameters[0]));
 
-#if !U_CFG_OS_CLIB_LEAKS
-    // Only print stuff if the C library isn't going to leak
     U_TEST_PRINT_LINE("network status callback called for %s.",
                       gpUNetworkTestTypeName[netType]);
-#endif
 
     gNetworkStatusCallbackParameters[netType].devHandle = devHandle;
     gNetworkStatusCallbackParameters[netType].isUp = isUp;
@@ -433,9 +394,7 @@ static void networkStatusCallback(uDeviceHandle_t devHandle,
 #endif
 
 // Open a socket and use it.
-static int32_t openSocketAndUseIt(uDeviceHandle_t devHandle,
-                                  uNetworkType_t netType,
-                                  int32_t *pHeapXxxSockInitLoss)
+static int32_t openSocketAndUseIt(uDeviceHandle_t devHandle, uNetworkType_t netType)
 {
     int32_t errorCodeOrSize;
     uSockDescriptor_t descriptor;
@@ -445,15 +404,9 @@ static int32_t openSocketAndUseIt(uDeviceHandle_t devHandle,
     U_TEST_PRINT_LINE("looking up echo server \"%s\"...",
                       U_SOCK_TEST_ECHO_UDP_SERVER_DOMAIN_NAME);
     // Look up the address of the server we use for UDP echo
-    // The first call to a sockets API needs to
-    // initialise the underlying sockets layer; take
-    // account of that initialisation heap cost here.
-    *pHeapXxxSockInitLoss += uPortGetHeapFree();
-    // Look up the address of the server we use for UDP echo
     errorCodeOrSize = uSockGetHostByName(devHandle,
                                          U_SOCK_TEST_ECHO_UDP_SERVER_DOMAIN_NAME,
                                          &(address.ipAddress));
-    *pHeapXxxSockInitLoss -= uPortGetHeapFree();
 
     if (errorCodeOrSize == 0) {
         // Add the port number we will use
@@ -521,8 +474,8 @@ U_PORT_TEST_FUNCTION("[network]", "networkSock")
 {
     uNetworkTestList_t *pList;
     uDeviceHandle_t devHandle;
-    int32_t heapUsed;
-    int32_t heapSockInitLoss = 0;
+    int32_t resourceCount;
+    const char *pContext = "A";
 
     // Make sure we start fresh for this test case
     uNetworkTestCleanUp();
@@ -531,7 +484,7 @@ U_PORT_TEST_FUNCTION("[network]", "networkSock")
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uPortInit() == 0);
     U_PORT_TEST_ASSERT(uDeviceInit() == 0);
@@ -545,6 +498,13 @@ U_PORT_TEST_FUNCTION("[network]", "networkSock")
                               gpUNetworkTestDeviceTypeName[pTmp->pDeviceCfg->deviceType],
                               gpUNetworkTestTypeName[pTmp->networkType]);
             U_PORT_TEST_ASSERT(uDeviceOpen(pTmp->pDeviceCfg, pTmp->pDevHandle) == 0);
+            // Test that we can set a user context
+            devHandle = *pTmp->pDevHandle;
+            U_PORT_TEST_ASSERT(pUDeviceGetUserContext(devHandle) == NULL);
+            uDeviceSetUserContext(devHandle, (void *) pContext);
+            U_PORT_TEST_ASSERT(pUDeviceGetUserContext(devHandle) == (void *) pContext);
+            uDeviceSetUserContext(devHandle, NULL);
+            U_PORT_TEST_ASSERT(pUDeviceGetUserContext(devHandle) == NULL);
         }
     }
 
@@ -567,8 +527,7 @@ U_PORT_TEST_FUNCTION("[network]", "networkSock")
                                                    pTmp->networkType,
                                                    pTmp->pNetworkCfg) == 0);
             // Do the thing
-            U_PORT_TEST_ASSERT(openSocketAndUseIt(devHandle, pTmp->networkType,
-                                                  &heapSockInitLoss) == 0);
+            U_PORT_TEST_ASSERT(openSocketAndUseIt(devHandle, pTmp->networkType) == 0);
         }
 
         for (uNetworkTestList_t *pTmp = pList; pTmp != NULL; pTmp = pTmp->pNext) {
@@ -590,31 +549,17 @@ U_PORT_TEST_FUNCTION("[network]", "networkSock")
     }
     uNetworkTestListFree();
 
+    uSockDeinit();
+    uSockCleanUp();
+
     uDeviceDeinit();
     uPortDeinit();
 
-#ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'defed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("%d byte(s) of heap were lost to the C library"
-                      " during this test, %d byte(s) were lost to"
-                      " sockets initialisation and we have leaked"
-                      " %d byte(s).", gSystemHeapLost, heapSockInitLoss,
-                      heapUsed - (gSystemHeapLost + heapSockInitLoss ));
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT((heapUsed < 0) ||
-                       (heapUsed <= (int32_t) (gSystemHeapLost +
-                                               heapSockInitLoss)));
-#else
-    (void) gSystemHeapLost;
-    (void) heapSockInitLoss;
-    (void) heapUsed;
-#endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 #if defined(U_BLE_TEST_CFG_REMOTE_SPS_CENTRAL) || defined(U_BLE_TEST_CFG_REMOTE_SPS_PERIPHERAL)
@@ -624,8 +569,7 @@ U_PORT_TEST_FUNCTION("[network]", "networkBle")
 {
     uNetworkTestList_t *pList;
     uDeviceHandle_t devHandle;
-    int32_t heapUsed;
-    int32_t heapSockInitLoss = 0;
+    int32_t resourceCount;
     int32_t timeoutCount;
     uBleSpsHandles_t spsHandles;
 
@@ -636,7 +580,7 @@ U_PORT_TEST_FUNCTION("[network]", "networkBle")
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uPortInit() == 0);
     U_PORT_TEST_ASSERT(uDeviceInit() == 0);
@@ -791,28 +735,11 @@ U_PORT_TEST_FUNCTION("[network]", "networkBle")
     uDeviceDeinit();
     uPortDeinit();
 
-# ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'defed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("%d byte(s) of heap were lost to the C library"
-                      " during this test, %d byte(s) were lost to"
-                      " sockets initialisation and we have leaked %d"
-                      " byte(s).", gSystemHeapLost, heapSockInitLoss,
-                      heapUsed - (gSystemHeapLost + heapSockInitLoss ));
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT((heapUsed < 0) ||
-                       (heapUsed <= (int32_t) (gSystemHeapLost +
-                                               heapSockInitLoss)));
-# else
-    (void) gSystemHeapLost;
-    (void) heapSockInitLoss;
-    (void) heapUsed;
-# endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 #endif // #if defined(U_BLE_TEST_CFG_REMOTE_SPS_CENTRAL) || defined(U_BLE_TEST_CFG_REMOTE_SPS_PERIPHERAL)
 
@@ -826,7 +753,7 @@ U_PORT_TEST_FUNCTION("[network]", "networkLoc")
     int32_t y;
     uLocation_t location;
     int64_t startTime;
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // In case a previous test failed
     uNetworkTestCleanUp();
@@ -835,7 +762,7 @@ U_PORT_TEST_FUNCTION("[network]", "networkLoc")
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uPortInit() == 0);
     // Don't check these for success as not all platforms support I2C or SPI
@@ -937,24 +864,11 @@ U_PORT_TEST_FUNCTION("[network]", "networkLoc")
     uPortI2cDeinit();
     uPortDeinit();
 
-#ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'defed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("%d byte(s) of heap were lost to the C library"
-                      " during this test and we have leaked %d byte(s).",
-                      gSystemHeapLost, heapUsed - gSystemHeapLost);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT((heapUsed < 0) ||
-                       (heapUsed <= (int32_t) gSystemHeapLost));
-#else
-    (void) gSystemHeapLost;
-    (void) heapUsed;
-#endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test BLE and Wifi one after the other on a single device.
@@ -963,7 +877,7 @@ U_PORT_TEST_FUNCTION("[network]", "networkShortRange")
 {
     uNetworkTestList_t *pList;
     uDeviceHandle_t devHandle;
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // In case a previous test failed
     uNetworkTestCleanUp();
@@ -972,7 +886,7 @@ U_PORT_TEST_FUNCTION("[network]", "networkShortRange")
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uPortInit() == 0);
     U_PORT_TEST_ASSERT(uDeviceInit() == 0);
@@ -1021,24 +935,11 @@ U_PORT_TEST_FUNCTION("[network]", "networkShortRange")
     uDeviceDeinit();
     uPortDeinit();
 
-#ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'defed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("%d byte(s) of heap were lost to the C library"
-                      " during this test and we have leaked %d byte(s).",
-                      gSystemHeapLost, heapUsed - gSystemHeapLost);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT((heapUsed < 0) ||
-                       (heapUsed <= (int32_t) gSystemHeapLost));
-#else
-    (void) gSystemHeapLost;
-    (void) heapUsed;
-#endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 #if defined(U_CFG_TEST_NET_STATUS_SHORT_RANGE) || defined(U_CFG_TEST_NET_STATUS_CELL)
@@ -1048,8 +949,7 @@ U_PORT_TEST_FUNCTION("[network]", "networkOutage")
 {
     uNetworkTestList_t *pList;
     uDeviceHandle_t devHandle;
-    int32_t heapUsed;
-    int32_t heapSockInitLoss = 0;
+    int32_t resourceCount;
     int32_t y;
     uNetworkStatusCallbackParameters_t *pCallbackParameters;
 
@@ -1060,7 +960,8 @@ U_PORT_TEST_FUNCTION("[network]", "networkOutage")
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uPortInit() == 0);
     U_PORT_TEST_ASSERT(uDeviceInit() == 0);
@@ -1156,8 +1057,7 @@ U_PORT_TEST_FUNCTION("[network]", "networkOutage")
                 case U_NETWORK_TYPE_CELL:
                     // For cellular, we have network access, so we
                     // should be able to perform a sockets operation
-                    U_PORT_TEST_ASSERT(openSocketAndUseIt(devHandle, pTmp->networkType,
-                                                          &heapSockInitLoss) == 0);
+                    U_PORT_TEST_ASSERT(openSocketAndUseIt(devHandle, pTmp->networkType) == 0);
                     break;
                 case U_NETWORK_TYPE_WIFI:
                     // Nothing to do for Wi-Fi, connecting to the AP
@@ -1254,8 +1154,7 @@ U_PORT_TEST_FUNCTION("[network]", "networkOutage")
                         // For cellular, the network should have re-established
                         // itself, and hence we should be able to perform a
                         // sockets operation straight away, no need to do an "up"
-                        y = openSocketAndUseIt(devHandle, pTmp->networkType,
-                                               &heapSockInitLoss);
+                        y = openSocketAndUseIt(devHandle, pTmp->networkType);
                         if (x == 0) {
                             U_PORT_TEST_ASSERT(y < 0);
                         } else {
@@ -1351,31 +1250,17 @@ U_PORT_TEST_FUNCTION("[network]", "networkOutage")
     U_PORT_TEST_ASSERT(uPortSemaphoreDelete(gBleConnectionSem) == 0);
     gBleConnectionSem = NULL;
 # endif
+    uSockDeinit();
+    uSockCleanUp();
+
     uDeviceDeinit();
     uPortDeinit();
 
-# ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'defed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("%d byte(s) of heap were lost to the C library"
-                      " during this test, %d byte(s) were lost to"
-                      " sockets initialisation and we have leaked %d"
-                      " byte(s).", gSystemHeapLost, heapSockInitLoss,
-                      heapUsed - (gSystemHeapLost + heapSockInitLoss ));
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT((heapUsed < 0) ||
-                       (heapUsed <= (int32_t) (gSystemHeapLost +
-                                               heapSockInitLoss)));
-# else
-    (void) gSystemHeapLost;
-    (void) heapSockInitLoss;
-    (void) heapUsed;
-# endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 #endif // #if defined(U_CFG_TEST_NET_STATUS_SHORT_RANGE) || defined (U_CFG_TEST_NET_STATUS_CELL)
@@ -1386,8 +1271,6 @@ U_PORT_TEST_FUNCTION("[network]", "networkOutage")
  */
 U_PORT_TEST_FUNCTION("[network]", "networkCleanUp")
 {
-    int32_t y;
-
     // Make sure that the switches haven't been left in the
     // "off" position
 #ifdef U_CFG_TEST_NET_STATUS_SHORT_RANGE
@@ -1398,30 +1281,21 @@ U_PORT_TEST_FUNCTION("[network]", "networkCleanUp")
     uPortTaskBlock(1000);
 #endif
 
+    U_TEST_PRINT_LINE("cleaning up any outstanding resources.\n");
+    uSockDeinit();
+    uSockCleanUp();
+
     // The network test configuration is shared between
     // the network, sockets, security and location tests
     // so must reset the handles here in case the
     // tests of one of the other APIs are coming next.
     uNetworkTestCleanUp();
     uDeviceDeinit();
-
-    y = uPortTaskStackMinFree(NULL);
-    if (y != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d byte(s)"
-                          " free at the end of these tests.", y);
-        U_PORT_TEST_ASSERT(y >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortSpiDeinit();
     uPortI2cDeinit();
     uPortDeinit();
-
-    y = uPortGetHeapMinFree();
-    if (y >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free"
-                          " at the end of these tests.", y);
-        U_PORT_TEST_ASSERT(y >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 // End of file

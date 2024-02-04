@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,9 +51,11 @@
 #include "u_error_common.h"
 
 #include "u_port.h"
+#include "u_port_os.h"   // Required by u_cell_private.h
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"   // Required by u_cell_private.h
+
+#include "u_test_util_resource_check.h"
 
 #include "u_at_client.h"
 
@@ -94,26 +96,26 @@
 #ifndef U_CELL_MQTT_TEST_MQTT_SERVER_IP_ADDRESS
 /** Server to use for MQTT testing.
  */
-# define U_CELL_MQTT_TEST_MQTT_SERVER_IP_ADDRESS  ubxlib.redirectme.net
+# define U_CELL_MQTT_TEST_MQTT_SERVER_IP_ADDRESS  ubxlib.com
 #endif
 
 #ifndef U_CELL_MQTT_TEST_MQTT_SERVER_IP_ADDRESS_SECURED
 /** Server to use for MQTT testing on a secured connection,
  * can't be hivemq as that doesn't support security.
  */
-# define U_CELL_MQTT_TEST_MQTT_SERVER_IP_ADDRESS_SECURED  ubxlib.redirectme.net:8883
+# define U_CELL_MQTT_TEST_MQTT_SERVER_IP_ADDRESS_SECURED  ubxlib.com:8883
 #endif
 
 #ifndef U_CELL_MQTT_TEST_MQTTSN_SERVER_IP_ADDRESS
 /** Server to use for MQTT-SN testing.
  */
-# define U_CELL_MQTT_TEST_MQTTSN_SERVER_IP_ADDRESS  ubxlib.redirectme.net
+# define U_CELL_MQTT_TEST_MQTTSN_SERVER_IP_ADDRESS  ubxlib.com
 #endif
 
 #ifndef U_CELL_MQTT_TEST_MQTTSN_SERVER_IP_ADDRESS_SECURED
 /** Server to use for MQTT-SN testing on a secured connection.
  */
-# define U_CELL_MQTT_TEST_MQTTSN_SERVER_IP_ADDRESS_SECURED  ubxlib.redirectme.net:8883
+# define U_CELL_MQTT_TEST_MQTTSN_SERVER_IP_ADDRESS_SECURED  ubxlib.com:8883
 #endif
 
 /* ----------------------------------------------------------------
@@ -182,7 +184,7 @@ U_PORT_TEST_FUNCTION("[cellMqtt]", "cellMqtt")
 {
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
-    int32_t heapUsed;
+    int32_t resourceCount;
     char buffer1[32];
     char buffer2[32];
     int32_t x;
@@ -198,8 +200,8 @@ U_PORT_TEST_FUNCTION("[cellMqtt]", "cellMqtt")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -360,7 +362,6 @@ U_PORT_TEST_FUNCTION("[cellMqtt]", "cellMqtt")
             U_PORT_TEST_ASSERT(!y);
         }
 
-
         // Can't set/get a "will" message as the test broker we use
         // doesn't connect if you set one
 #ifdef U_CELL_MQTT_TEST_ENABLE_WILL_TEST
@@ -484,12 +485,11 @@ U_PORT_TEST_FUNCTION("[cellMqtt]", "cellMqtt")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** A test of the configuration functions in the cellular MQTT API
@@ -499,7 +499,7 @@ U_PORT_TEST_FUNCTION("[cellMqtt]", "cellMqttSn")
 {
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
-    int32_t heapUsed;
+    int32_t resourceCount;
     char buffer1[32];
     int32_t x;
     int32_t y;
@@ -515,8 +515,8 @@ U_PORT_TEST_FUNCTION("[cellMqtt]", "cellMqttSn")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -602,22 +602,27 @@ U_PORT_TEST_FUNCTION("[cellMqtt]", "cellMqttSn")
             U_PORT_TEST_ASSERT(x == -1);
         } else {
             x = 0;
-            U_TEST_PRINT_LINE_SN("security is off, switching it on"
+            U_TEST_PRINT_LINE_SN("security is off, trying to switch it on"
                                  " with profile %d...", x);
-            U_PORT_TEST_ASSERT(uCellMqttSetSecurityOn(cellHandle, x) == 0);
-            x = -1;
-            y = uCellMqttIsSecured(cellHandle, &x);
-            U_TEST_PRINT_LINE_SN("security is now %s, profile is"
-                                 " %d.", y ? "on" : "off", x);
-            U_PORT_TEST_ASSERT(y);
-            U_PORT_TEST_ASSERT(x == 0);
+            y = uCellMqttSetSecurityOn(cellHandle, x);
+            if (U_CELL_PRIVATE_HAS(pModule, U_CELL_PRIVATE_FEATURE_MQTTSN_SECURITY)) {
+                U_PORT_TEST_ASSERT(y == 0);
+                x = -1;
+                y = uCellMqttIsSecured(cellHandle, &x);
+                U_TEST_PRINT_LINE_SN("security is now %s, profile is"
+                                     " %d.", y ? "on" : "off", x);
+                U_PORT_TEST_ASSERT(y);
+                U_PORT_TEST_ASSERT(x == 0);
+                // Switch security off again before we continue
+                U_PORT_TEST_ASSERT(uCellMqttSetSecurityOff(cellHandle) == 0);
+                y = uCellMqttIsSecured(cellHandle, &x);
+                U_TEST_PRINT_LINE_SN("security is now %s.", y ? "on" : "off");
+                U_PORT_TEST_ASSERT(!y);
+            } else {
+                U_TEST_PRINT_LINE_SN("security is not supported on MQTT-SN.");
+                U_PORT_TEST_ASSERT(y == (int32_t) U_ERROR_COMMON_NOT_SUPPORTED);
+            }
         }
-
-        // Switch security off again before we continue
-        U_PORT_TEST_ASSERT(uCellMqttSetSecurityOff(cellHandle) == 0);
-        y = uCellMqttIsSecured(cellHandle, &x);
-        U_TEST_PRINT_LINE_SN("security is now %s.", y ? "on" : "off");
-        U_PORT_TEST_ASSERT(!y);
 
         // Can't set/get a "will" message as the test broker we use
         // doesn't connect if you set one
@@ -725,12 +730,11 @@ U_PORT_TEST_FUNCTION("[cellMqtt]", "cellMqttSn")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE_SN("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Clean-up to be run at the end of this round of tests, just
@@ -739,28 +743,13 @@ U_PORT_TEST_FUNCTION("[cellMqtt]", "cellMqttSn")
  */
 U_PORT_TEST_FUNCTION("[cellMqtt]", "cellMqttCleanUp")
 {
-    int32_t x;
-
     if (gHandles.cellHandle != NULL) {
         uCellMqttDeinit(gHandles.cellHandle);
     }
     uCellTestPrivateCleanup(&gHandles);
-
-    x = uPortTaskStackMinFree(NULL);
-    if (x != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d"
-                          " byte(s) free at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-    x = uPortGetHeapMinFree();
-    if (x >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free at"
-                          " the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 #endif // #ifdef U_CFG_TEST_CELL_MODULE_TYPE

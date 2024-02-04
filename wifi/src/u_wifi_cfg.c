@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -116,6 +116,64 @@ static int32_t restart(const uAtClientHandle_t atHandle, bool store)
     return error;
 }
 
+static int32_t uWifiStationSetStaticIP(const uAtClientHandle_t atHandle,
+                                       const uWifiIpCfg_t *wifiIpCfg)
+{
+    int32_t error = (int32_t) U_ERROR_COMMON_SUCCESS;
+
+    uAtClientLock(atHandle);
+    uAtClientCommandStart(atHandle, "AT+UWSC=");
+    uAtClientWriteInt(atHandle, 0);
+    uAtClientWriteInt(atHandle, 100);
+    uAtClientWriteInt(atHandle, 1);
+    uAtClientWriteInt(atHandle, 101);
+    uAtClientWriteString(atHandle, (const char *)wifiIpCfg->IPv4Addr, false);
+    uAtClientCommandStopReadResponse(atHandle);
+    error = uAtClientUnlock(atHandle);
+
+    if (error == (int32_t) U_ERROR_COMMON_SUCCESS) {
+        uAtClientLock(atHandle);
+        uAtClientCommandStart(atHandle, "AT+UWSC=");
+        uAtClientWriteInt(atHandle, 0);
+        uAtClientWriteInt(atHandle, 102);
+        uAtClientWriteString(atHandle, (const char *)wifiIpCfg->subnetMask, false);
+        uAtClientWriteInt(atHandle, 103);
+        uAtClientWriteString(atHandle, (const char *)wifiIpCfg->defaultGW, false);
+        uAtClientCommandStopReadResponse(atHandle);
+        error = uAtClientUnlock(atHandle);
+    }
+
+    if (error == (int32_t) U_ERROR_COMMON_SUCCESS) {
+        uAtClientLock(atHandle);
+        uAtClientCommandStart(atHandle, "AT+UWSC=");
+        uAtClientWriteInt(atHandle, 0);
+        uAtClientWriteInt(atHandle, 104);
+        uAtClientWriteString(atHandle, (const char *)wifiIpCfg->DNS1, false);
+        uAtClientWriteInt(atHandle, 105);
+        uAtClientWriteString(atHandle, (const char *)wifiIpCfg->DNS2, false);
+
+        uAtClientCommandStopReadResponse(atHandle);
+        error = uAtClientUnlock(atHandle);
+    }
+
+    return error;
+}
+
+static int32_t uWifiStationSetDHCP(const uAtClientHandle_t atHandle)
+{
+    int32_t error = (int32_t) U_ERROR_COMMON_SUCCESS;
+
+    uAtClientLock(atHandle);
+    uAtClientCommandStart(atHandle, "AT+UWSC=");
+    uAtClientWriteInt(atHandle, 0);
+    uAtClientWriteInt(atHandle, 100);
+    uAtClientWriteInt(atHandle, 2);
+    uAtClientCommandStopReadResponse(atHandle);
+    error = uAtClientUnlock(atHandle);
+
+    return error;
+}
+
 /* ----------------------------------------------------------------
  * PUBLIC FUNCTIONS
  * -------------------------------------------------------------- */
@@ -134,10 +192,14 @@ int32_t uWifiCfgConfigure(uDeviceHandle_t devHandle,
 
             pInstance = pUShortRangePrivateGetInstance(devHandle);
             if (pInstance != NULL) {
-                errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
-                bool restartNeeded = false;
                 atHandle = pInstance->atHandle;
-
+                errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+                if (pCfg->dhcp) {
+                    uWifiStationSetDHCP(atHandle);
+                } else {
+                    uWifiStationSetStaticIP(atHandle, &pCfg->wifiIpCfg);
+                }
+                bool restartNeeded = false;
 
                 int32_t mode = getStartupMode(atHandle);
                 if (mode != U_WIFI_CFG_STARTUP_MODE_EDM) {
@@ -146,7 +208,6 @@ int32_t uWifiCfgConfigure(uDeviceHandle_t devHandle,
                         restartNeeded = true;
                     }
                 }
-
 
                 if (errorCode >= 0 && restartNeeded) {
                     restart(atHandle, true);

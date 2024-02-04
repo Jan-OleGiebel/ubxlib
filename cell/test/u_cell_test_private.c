@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,9 +53,8 @@
 #include "u_cell_pwr.h"
 #include "u_cell_cfg.h"
 #include "u_cell_info.h"
-#ifdef U_CELL_TEST_MUX_ALWAYS
-# include "u_cell_mux.h"
-#endif
+#include "u_cell_mux.h"
+#include "u_cell_ppp_shared.h"
 
 #include "u_cell_test_cfg.h"
 #include "u_cell_test_private.h"
@@ -201,6 +200,7 @@ int32_t uCellTestPrivatePreamble(uCellModuleType_t moduleType,
     uint64_t bandMask2;
     bool onNotOff = false;
     char imsi[U_CELL_INFO_IMSI_SIZE];
+    uAtClientStreamHandle_t stream;
 
     // Set some defaults
     pParameters->uartHandle = -1;
@@ -211,7 +211,13 @@ int32_t uCellTestPrivatePreamble(uCellModuleType_t moduleType,
 
     // Initialise the porting layer
     if (uPortInit() == 0) {
+#ifdef U_CFG_APP_UART_PREFIX
+        uPortUartPrefix(U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX));
+        U_TEST_PRINT_LINE("opening UART %s%d...", U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX),
+                          U_CFG_APP_CELL_UART);
+#else
         U_TEST_PRINT_LINE("opening UART %d...", U_CFG_APP_CELL_UART);
+#endif
         // Open a UART with the standard parameters
         pParameters->uartHandle = uPortUartOpen(U_CFG_APP_CELL_UART,
                                                 U_CELL_UART_BAUD_RATE, NULL,
@@ -225,10 +231,10 @@ int32_t uCellTestPrivatePreamble(uCellModuleType_t moduleType,
     if (pParameters->uartHandle >= 0) {
         if (uAtClientInit() == 0) {
             U_TEST_PRINT_LINE("adding an AT client on UART %d...", U_CFG_APP_CELL_UART);
-            pParameters->atClientHandle = uAtClientAdd(pParameters->uartHandle,
-                                                       U_AT_CLIENT_STREAM_TYPE_UART,
-                                                       NULL,
-                                                       U_CELL_AT_BUFFER_LENGTH_BYTES);
+            stream.handle.int32 = pParameters->uartHandle;
+            stream.type = U_AT_CLIENT_STREAM_TYPE_UART;
+            pParameters->atClientHandle = uAtClientAddExt(&stream, NULL,
+                                                          U_CELL_AT_BUFFER_LENGTH_BYTES);
         }
     }
 
@@ -257,6 +263,12 @@ int32_t uCellTestPrivatePreamble(uCellModuleType_t moduleType,
                 // Power up
                 U_TEST_PRINT_LINE("powering on...");
                 errorCode = uCellPwrOn(cellHandle, U_CELL_TEST_CFG_SIM_PIN, NULL);
+                if (errorCode < 0) {
+                    // If powering-on fails, try sending the CMUX abort sequence in
+                    // case the module is stuck in CMUX mode, and powering-on again
+                    uCellMuxModuleAbort(cellHandle);
+                    errorCode = uCellPwrOn(cellHandle, U_CELL_TEST_CFG_SIM_PIN, NULL);
+                }
                 if (errorCode == 0) {
                     // Note: if this is a SARA-R422 module, which supports only
                     // 1.8V SIMs, the SIM cards we happen to use in the ubxlib test farm
@@ -367,7 +379,8 @@ int32_t uCellTestPrivatePreamble(uCellModuleType_t moduleType,
                             // correctly for the Nutaq network box we use for testing
                             if ((errorCode == 0) &&
                                 ((primaryRat == U_CELL_NET_RAT_CATM1) ||
-                                 (primaryRat == U_CELL_NET_RAT_NB1))) {
+                                 (primaryRat == U_CELL_NET_RAT_NB1) ||
+                                 (primaryRat == U_CELL_NET_RAT_LTE))) {
                                 errorCode = uCellCfgGetBandMask(cellHandle, primaryRat,
                                                                 &bandMask1, &bandMask2);
                                 if (errorCode == 0) {
@@ -452,6 +465,10 @@ void uCellTestPrivatePostamble(uCellTestPrivate_t *pParameters,
     }
 #endif
 
+    if (pParameters->cellHandle != NULL) {
+        // Make sure PPP is closed
+        uCellPppClose(pParameters->cellHandle, true);
+    }
     U_TEST_PRINT_LINE("deinitialising cellular API...");
     // Let uCellDeinit() remove the cell handle
     uCellDeinit();
@@ -525,39 +542,43 @@ int32_t uCellTestPrivateLwm2mDisable(uDeviceHandle_t cellHandle)
         pInstance = pUCellPrivateGetInstance(cellHandle);
         errorCode = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
         if (pInstance != NULL) {
-            errorCode = (int32_t) U_CELL_ERROR_AT;
-            atHandle = pInstance->atHandle;
-            uAtClientLock(atHandle);
-            uAtClientCommandStart(atHandle, "AT+ULWM2M?");
-            uAtClientCommandStop(atHandle);
-            uAtClientResponseStart(atHandle, "+ULWM2M:");
-            lwm2mClientState = uAtClientReadInt(atHandle);
-            uAtClientResponseStop(atHandle);
-            uAtClientUnlock(atHandle);
-            // 0 means enabled, 1 means disabled; some modules
-            // don't support reading the LWM2M client state at all,
-            // in which case we just need to blindly switch it
-            // off each time, there's nothing else we can do
-            if (lwm2mClientState != 1) {
+            errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+            if (U_CELL_PRIVATE_HAS(pInstance->pModule,
+                                   U_CELL_PRIVATE_FEATURE_LWM2M)) {
+                errorCode = (int32_t) U_CELL_ERROR_AT;
+                atHandle = pInstance->atHandle;
                 uAtClientLock(atHandle);
-                uAtClientCommandStart(atHandle, "AT+ULWM2M=");
-                uAtClientWriteInt(atHandle, 1);
-                uAtClientCommandStopReadResponse(atHandle);
-                if (uAtClientUnlock(atHandle) == 0) {
-                    if (lwm2mClientState == 0) {
-                        // If the LWM2M client was previously enabled
-                        // then we should reboot to effect the
-                        // change; if the module was the kind which
-                        // doesn't support reading the LWM2M client
-                        // state, we can't tell if it was on or off
-                        // before, then we don't do a reboot here as
-                        // we would be rebooting the module every time
-                        pInstance->rebootIsRequired = true;
+                uAtClientCommandStart(atHandle, "AT+ULWM2M?");
+                uAtClientCommandStop(atHandle);
+                uAtClientResponseStart(atHandle, "+ULWM2M:");
+                lwm2mClientState = uAtClientReadInt(atHandle);
+                uAtClientResponseStop(atHandle);
+                uAtClientUnlock(atHandle);
+                // 0 means enabled, 1 means disabled; some modules
+                // don't support reading the LWM2M client state at all,
+                // in which case we just need to blindly switch it
+                // off each time, there's nothing else we can do
+                if (lwm2mClientState != 1) {
+                    uAtClientLock(atHandle);
+                    uAtClientCommandStart(atHandle, "AT+ULWM2M=");
+                    uAtClientWriteInt(atHandle, 1);
+                    uAtClientCommandStopReadResponse(atHandle);
+                    if (uAtClientUnlock(atHandle) == 0) {
+                        if (lwm2mClientState == 0) {
+                            // If the LWM2M client was previously enabled
+                            // then we should reboot to effect the
+                            // change; if the module was the kind which
+                            // doesn't support reading the LWM2M client
+                            // state, we can't tell if it was on or off
+                            // before, then we don't do a reboot here as
+                            // we would be rebooting the module every time
+                            pInstance->rebootIsRequired = true;
+                        }
+                        errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
                     }
+                } else {
                     errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
                 }
-            } else {
-                errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
             }
         }
 

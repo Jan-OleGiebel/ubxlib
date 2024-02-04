@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,7 +48,7 @@
 #include "u_cfg_sw.h"
 #include "u_cfg_app_platform_specific.h"
 #include "u_cfg_test_platform_specific.h"
-#include "u_cfg_os_platform_specific.h"  // For #define U_CFG_OS_CLIB_LEAKS
+#include "u_cfg_os_platform_specific.h"
 
 #include "u_error_common.h"
 
@@ -56,10 +56,12 @@
                                               before the other port files if
                                               any print or scan function is used. */
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"
 #include "u_port_event_queue.h"
+
+#include "u_test_util_resource_check.h"
 
 #include "u_network.h"
 #include "u_network_test_shared_cfg.h"
@@ -101,7 +103,7 @@
 //lint -esym(773, U_MQTT_CLIENT_TEST_MQTT_BROKER_URL) Suppress not fully
 // bracketed, Lint is wary of the "-" in here but we can't have brackets
 // around this since it is used directly.
-# define U_MQTT_CLIENT_TEST_MQTT_BROKER_URL ubxlib.redirectme.net
+# define U_MQTT_CLIENT_TEST_MQTT_BROKER_URL ubxlib.com
 #endif
 
 #ifndef U_MQTT_CLIENT_TEST_MQTT_SECURE_BROKER_URL
@@ -111,7 +113,7 @@
 //lint -esym(773, U_MQTT_CLIENT_TEST_MQTT_SECURE_BROKER_URL) Suppress not
 // fully bracketed, Lint is wary of the "-" in here but we can't have
 // brackets around this since it is used directly.
-# define U_MQTT_CLIENT_TEST_MQTT_SECURE_BROKER_URL ubxlib.redirectme.net:8883
+# define U_MQTT_CLIENT_TEST_MQTT_SECURE_BROKER_URL ubxlib.com:8883
 #endif
 
 #ifndef U_MQTT_CLIENT_TEST_READ_TOPIC_MAX_LENGTH_BYTES
@@ -158,8 +160,9 @@ static char gSerialNumber[U_SECURITY_SERIAL_NUMBER_MAX_LENGTH_BYTES];
 
 /** Data to send over MQTT; all printable characters.
  */
-static const char gSendData[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                                "0123456789\"!#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+static const char gSendData[] =
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789\"!#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
 
 /** Flag to indicate that the disconnect callback
  * has been called.
@@ -232,11 +235,17 @@ static uNetworkTestList_t *pStdPreamble(bool mqttSn)
 static void messageIndicationCallback(int32_t numUnread, void *pParam)
 {
     int32_t *pNumUnread = (int32_t *) pParam;
+    int32_t x;
 
-#if !U_CFG_OS_CLIB_LEAKS
-    // Only print stuff if the C library isn't going to leak
     U_TEST_PRINT_LINE_MQTT("messageIndicationCallback() called, %d message(s) unread.", numUnread);
-#endif
+
+    if (gpMqttContextA != NULL) {
+        // To prove that it is possible to do it, rather than for any
+        // practical reason, call back into the MQTT API here
+        x = uMqttClientGetUnread(gpMqttContextA);
+        U_PORT_TEST_ASSERT(x >= numUnread);
+        U_TEST_PRINT_LINE_MQTT("messageIndicationCallback(), uMqttClientGetUnread() returned %d.", x);
+    }
 
     *pNumUnread = numUnread;
 }
@@ -248,16 +257,12 @@ static void disconnectCallback(int32_t errorCode, void *pParam)
 {
     (void) pParam;
 
-#if !U_CFG_OS_CLIB_LEAKS
-    // Only print stuff if the C library isn't going to leak
     U_TEST_PRINT_LINE_MQTT("disconnectCallback() called.");
     U_TEST_PRINT_LINE_MQTT("last MQTT error code %d.", errorCode);
-#else
-    (void) errorCode;
-#endif
 
     gDisconnectCallbackCalled = true;
 }
+
 /* ----------------------------------------------------------------
  * PUBLIC FUNCTIONS: TESTS
  * -------------------------------------------------------------- */
@@ -268,8 +273,7 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClient")
 {
     uNetworkTestList_t *pList;
     uDeviceHandle_t devHandle;
-    int32_t heapUsed;
-    int32_t heapXxxSecurityInitLoss = 0;
+    int32_t resourceCount;
     uMqttClientConnection_t connection = U_MQTT_CLIENT_CONNECTION_DEFAULT;
     uSecurityTlsSettings_t tlsSettings = U_SECURITY_TLS_SETTINGS_DEFAULT;
     int32_t y;
@@ -285,6 +289,14 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClient")
     // In case a previous test failed
     uNetworkTestCleanUp();
 
+    // Whatever called us likely initialised the
+    // port so deinitialise it here to obtain the
+    // correct initial heap size
+    uPortDeinit();
+
+    // Get the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
+
     // Do the standard preamble, which in this case
     // only adds the networks, doesn't bring them up,
     // since SARA-R4 will not connect with a different
@@ -294,8 +306,6 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClient")
     // Repeat for all bearers
     for (uNetworkTestList_t *pTmp = pList; pTmp != NULL; pTmp = pTmp->pNext) {
         devHandle = *pTmp->pDevHandle;
-        // Get the initial-ish heap
-        heapUsed = uPortGetHeapFree();
 
         // Get a unique number we can use to stop parallel
         // tests colliding at the MQTT broker
@@ -326,7 +336,6 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClient")
             // Make a unique topic name to stop different boards colliding
             snprintf(pTopicOut, U_MQTT_CLIENT_TEST_READ_TOPIC_MAX_LENGTH_BYTES,
                      "ubx_test/%s", gSerialNumber);
-            gNumUnread = 0;
             bool noTls = (run == 0) || (pTmp->networkType == U_NETWORK_TYPE_WIFI);
             // Open an MQTT client
             if (noTls) {
@@ -334,14 +343,7 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClient")
                 gpMqttContextA = pUMqttClientOpen(devHandle, NULL);
             } else {
                 U_TEST_PRINT_LINE_MQTT("opening MQTT client, now with a TLS connection...");
-                // Creating a secure connection may use heap in the underlying
-                // network layer which will be reclaimed when the
-                // network layer is closed but we don't do that here
-                // to save time so need to allow for it in the heap loss
-                // calculation
-                heapXxxSecurityInitLoss += uPortGetHeapFree();
                 gpMqttContextA = pUMqttClientOpen(devHandle, &tlsSettings);
-                heapXxxSecurityInitLoss -= uPortGetHeapFree();
             }
 
             if (gpMqttContextA != NULL) {
@@ -430,6 +432,7 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClient")
                     }
 
                     U_PORT_TEST_ASSERT(uMqttClientGetUnread(gpMqttContextA) == 0);
+                    gNumUnread = 0;
 
                     U_TEST_PRINT_LINE_MQTT("publishing %d byte(s) to topic \"%s\"...",
                                            U_MQTT_CLIENT_TEST_PUBLISH_MAX_LENGTH_BYTES, pTopicOut);
@@ -509,6 +512,7 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClient")
                     U_PORT_TEST_ASSERT(memcmp(pMessageIn, pMessageOut, s) == 0);
 
                     U_PORT_TEST_ASSERT(uMqttClientGetUnread(gpMqttContextA) == 0);
+                    gNumUnread = 0;
 
                     // Read again - should return U_ERROR_COMMON_EMPTY
                     // Note that in the cellular case, for some modules (e.g. SARA-R4),
@@ -521,6 +525,24 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClient")
                                                pMessageIn, &s, &qos);
                     U_TEST_PRINT_LINE_MQTT("attempting to read a message when there are none returned %d.", y);
                     U_PORT_TEST_ASSERT(y == (int32_t) U_ERROR_COMMON_EMPTY);
+
+#ifndef U_MQTT_CLIENT_TEST_NO_NULL_SEND
+                    // Check that we can send an empty message with the retain flag set to true,
+                    // which can be used to remove the single-allowed retained message from a topic.
+                    U_TEST_PRINT_LINE_MQTT("attempting to send a NULL message with retain set.", y);
+                    y = uMqttClientPublish(gpMqttContextA, pTopicOut, NULL, 0, U_MQTT_QOS_EXACTLY_ONCE, true);
+                    if (y == 0) {
+                        U_TEST_PRINT_LINE_MQTT("publish of empty message with retain set was successful.");
+                        // We've just sent a message
+                        U_PORT_TEST_ASSERT(uMqttClientGetTotalMessagesSent(gpMqttContextA) > 0);
+                    } else {
+                        U_TEST_PRINT_LINE_MQTT("publishing an empty message with retain set"
+                                               " returned error %d, module error %d.", y,
+                                               uMqttClientGetLastErrorCode(gpMqttContextA));
+                        //lint -e(506, 774) Suppress constant value Boolean
+                        U_PORT_TEST_ASSERT(false);
+                    }
+#endif
 
                     // Cancel the subscribe
                     U_TEST_PRINT_LINE_MQTT("unsubscribing from topic \"%s\"...", pTopicOut);
@@ -572,13 +594,6 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClient")
         uPortFree(pMessageOut);
         uPortFree(pTopicIn);
         uPortFree(pTopicOut);
-
-        // Check for memory leaks
-        heapUsed -= uPortGetHeapFree();
-        U_TEST_PRINT_LINE_MQTT("%d byte(s) were lost to security initialisation;"
-                               " we have leaked %d byte(s).", heapXxxSecurityInitLoss,
-                               heapUsed - heapXxxSecurityInitLoss);
-        U_PORT_TEST_ASSERT(heapUsed <= heapXxxSecurityInitLoss);
     }
 
     // Close the devices once more and free the list
@@ -591,6 +606,16 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClient")
         }
     }
     uNetworkTestListFree();
+    // Clean-up TLS security mutex; an application wouldn't normally,
+    // do this, we only do it here to make the sums add up
+    uSecurityTlsCleanUp();
+    uDeviceDeinit();
+    uPortDeinit();
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX_MQTT, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE_MQTT("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 #ifndef U_CFG_TEST_MQTT_CLIENT_SN_DISABLE_CONNECTIVITY_TEST
@@ -601,7 +626,7 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClientSn")
 {
     uNetworkTestList_t *pList;
     uDeviceHandle_t devHandle = NULL;
-    int32_t heapUsed;
+    int32_t resourceCount;
     uMqttClientConnection_t connection = U_MQTT_CLIENT_CONNECTION_DEFAULT;
     int32_t y;
     int32_t z;
@@ -618,6 +643,14 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClientSn")
     // In case a previous test failed
     uNetworkTestCleanUp();
 
+    // Whatever called us likely initialised the
+    // port so deinitialise it here to obtain the
+    // correct initial heap size
+    uPortDeinit();
+
+    // Get the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
+
     U_PORT_TEST_ASSERT(uPortInit() == 0);
     U_PORT_TEST_ASSERT(uDeviceInit() == 0);
 
@@ -629,8 +662,6 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClientSn")
     // Repeat for all bearers
     for (uNetworkTestList_t *pTmp = pList; pTmp != NULL; pTmp = pTmp->pNext) {
         devHandle = *pTmp->pDevHandle;
-        // Get the initial-ish heap
-        heapUsed = uPortGetHeapFree();
 
         U_TEST_PRINT_LINE_MQTTSN("bringing up %s...",
                                  gpUNetworkTestTypeName[pTmp->networkType]);
@@ -660,7 +691,6 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClientSn")
         // Make a unique topic name to stop different boards colliding
         snprintf(pTopicNameOutMqtt, U_MQTT_CLIENT_TEST_READ_TOPIC_MAX_LENGTH_BYTES,
                  "ubx_test/%s", gSerialNumber);
-        gNumUnread = 0;
         // Open an MQTT-SN client
         U_TEST_PRINT_LINE_MQTTSN("opening MQTT-SN client...");
         gpMqttContextA = pUMqttClientOpen(devHandle, NULL);
@@ -742,6 +772,7 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClientSn")
                 }
 
                 U_PORT_TEST_ASSERT(uMqttClientGetUnread(gpMqttContextA) == 0);
+                gNumUnread = 0;
 
                 // Do this twice, once with the topic ID returned by uMqttClientSnSubscribe()
                 // above and a second time with one returned by uMqttClientSnRegisterNormalTopic()
@@ -821,6 +852,7 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClientSn")
                     U_PORT_TEST_ASSERT(memcmp(pMessageIn, pMessageOut, s) == 0);
 
                     U_PORT_TEST_ASSERT(uMqttClientGetUnread(gpMqttContextA) == 0);
+                    gNumUnread = 0;
 
                     if (idRun == 0) {
                         // Now register an ID for the same topic for use on the next turn
@@ -834,6 +866,22 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClientSn")
                         U_PORT_TEST_ASSERT(uMqttClientSnGetTopicId(&topicNameOut) >= 0);
                         U_PORT_TEST_ASSERT(uMqttClientSnGetTopicNameShort(&topicNameOut, topicNameShortStr) < 0);
                     }
+                }
+
+                // Check that we can send an empty message with the retain flag set to true,
+                // which can be used to remove the single-allowed retained message from a topic.
+                U_TEST_PRINT_LINE_MQTTSN("attempting to send a NULL message with retain set.", y);
+                y = uMqttClientSnPublish(gpMqttContextA, &topicNameOut, NULL, 0, U_MQTT_QOS_EXACTLY_ONCE, true);
+                if (y == 0) {
+                    U_TEST_PRINT_LINE_MQTTSN("publish of empty message with retain set was successful.");
+                    // We've just sent a message
+                    U_PORT_TEST_ASSERT(uMqttClientGetTotalMessagesSent(gpMqttContextA) > 0);
+                } else {
+                    U_TEST_PRINT_LINE_MQTTSN("publishing an empty message with retain set"
+                                             " returned error %d, module error %d.", y,
+                                             uMqttClientGetLastErrorCode(gpMqttContextA));
+                    //lint -e(506, 774) Suppress constant value Boolean
+                    U_PORT_TEST_ASSERT(false);
                 }
 
                 // Cancel the subscribe
@@ -930,11 +978,6 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClientSn")
         U_TEST_PRINT_LINE_MQTTSN("taking down %s...", gpUNetworkTestTypeName[pTmp->networkType]);
         U_PORT_TEST_ASSERT(uNetworkInterfaceDown(devHandle,
                                                  pTmp->networkType) == 0);
-
-        // Check for memory leaks
-        heapUsed -= uPortGetHeapFree();
-        U_TEST_PRINT_LINE_MQTTSN("we have leaked %d byte(s).", heapUsed);
-        U_PORT_TEST_ASSERT(heapUsed <= 0);
     }
 
     // Close the devices once more and free the list
@@ -947,6 +990,13 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClientSn")
         }
     }
     uNetworkTestListFree();
+    uDeviceDeinit();
+    uPortDeinit();
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX_MQTTSN, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE_MQTTSN("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 #endif // #ifndef U_CFG_TEST_MQTT_CLIENT_SN_DISABLE_CONNECTIVITY_TEST
@@ -957,7 +1007,7 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClientSn")
  */
 U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClientCleanUp")
 {
-    int32_t y;
+    U_TEST_PRINT_LINE_MQTT("cleaning up any outstanding resources.\n");
 
     if (gpMqttContextA != NULL) {
         uMqttClientClose(gpMqttContextA);
@@ -970,23 +1020,13 @@ U_PORT_TEST_FUNCTION("[mqttClient]", "mqttClientCleanUp")
     // so must reset the handles here in case the
     // tests of one of the other APIs are coming next.
     uNetworkTestCleanUp();
+    // Clean-up TLS security mutex; an application wouldn't normally,
+    // do this, we only do it here to make the sums add up
+    uSecurityTlsCleanUp();
     uDeviceDeinit();
-
-    y = uPortTaskStackMinFree(NULL);
-    if (y != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE_MQTTSN("main task stack had a minimum of %d"
-                                 " byte(s) free at the end of these tests.", y);
-        U_PORT_TEST_ASSERT(y >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-    y = uPortGetHeapMinFree();
-    if (y >= 0) {
-        U_TEST_PRINT_LINE_MQTTSN("heap had a minimum of %d byte(s) free"
-                                 " at the end of these tests.", y);
-        U_PORT_TEST_ASSERT(y >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX_MQTT, NULL, true);
 }
 
 // End of file

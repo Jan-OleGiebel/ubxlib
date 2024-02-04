@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@
 // HTTPS server URL: this is a test server that accepts PUT/POST
 // requests and GET/HEAD/DELETE requests on port 8081; there is
 // also an HTTP server on port 8080.
-#define MY_SERVER_NAME "ubxlib.redirectme.net:8081"
+#define MY_SERVER_NAME "ubxlib.com:8081"
 
 // Some data to PUT and GET with the server.
 const char *gpMyData = "Hello world!";
@@ -69,6 +69,11 @@ const char *gpMyData = "Hello world!";
 /* ----------------------------------------------------------------
  * VARIABLES
  * -------------------------------------------------------------- */
+
+// ZEPHYR USERS may prefer to set the device and network
+// configuration from their device tree, rather than in this C
+// code: see /port/platform/zephyr/README.md for instructions on
+// how to do that.
 
 // Below is the module configuration
 // When U_CFG_TEST_CELL_MODULE_TYPE is set this example will setup a
@@ -98,7 +103,12 @@ static const uDeviceCfg_t gDeviceCfg = {
             .pinTxd = U_CFG_APP_PIN_SHORT_RANGE_TXD,
             .pinRxd = U_CFG_APP_PIN_SHORT_RANGE_RXD,
             .pinCts = U_CFG_APP_PIN_SHORT_RANGE_CTS,
-            .pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS
+            .pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS,
+#ifdef U_CFG_APP_UART_PREFIX
+            .pPrefix = U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX) // Relevant for Linux only
+#else
+            .pPrefix = NULL
+#endif
         },
     },
 };
@@ -119,7 +129,7 @@ static const uNetworkType_t gNetType = U_NETWORK_TYPE_WIFI;
 //
 // Note that the pin numbers are those of the MCU: if you
 // are using an MCU inside a u-blox module the IO pin numbering
-// for the module is likely different that from the MCU: check
+// for the module is likely different to that of the MCU: check
 // the data sheet for the module to determine the mapping.
 
 // DEVICE i.e. module/chip configuration: in this case a cellular
@@ -144,7 +154,12 @@ static const uDeviceCfg_t gDeviceCfg = {
             .pinTxd = U_CFG_APP_PIN_CELL_TXD,
             .pinRxd = U_CFG_APP_PIN_CELL_RXD,
             .pinCts = U_CFG_APP_PIN_CELL_CTS,
-            .pinRts = U_CFG_APP_PIN_CELL_RTS
+            .pinRts = U_CFG_APP_PIN_CELL_RTS,
+#ifdef U_CFG_APP_UART_PREFIX
+            .pPrefix = U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX) // Relevant for Linux only
+#else
+            .pPrefix = NULL
+#endif
         },
     },
 };
@@ -153,17 +168,41 @@ static const uNetworkCfgCell_t gNetworkCfg = {
     .type = U_NETWORK_TYPE_CELL,
     .pApn = NULL, /* APN: NULL to accept default.  If using a Thingstream SIM enter "tsiot" here */
     .timeoutSeconds = 240 /* Connection timeout in seconds */
-    // There is an additional field here "pKeepGoingCallback",
-    // which we do NOT set, we allow the compiler to set it to 0
-    // and all will be fine. You may set the field to a function
-    // of the form "bool keepGoingCallback(uDeviceHandle_t devHandle)",
-    // e.g.:
-    // .pKeepGoingCallback = keepGoingCallback
-    // ...and your function will be called periodically during an
-    // abortable network operation such as connect/disconnect;
-    // if it returns true the operation will continue else it
-    // will be aborted, allowing you immediate control.  If this
-    // field is set, timeoutSeconds will be ignored.
+    // There are five additional fields here which we do NOT set,
+    // we allow the compiler to set them to 0 and all will be fine.
+    // The fields are:
+    //
+    // - "pKeepGoingCallback": you may set this field to a function
+    //   of the form "bool keepGoingCallback(uDeviceHandle_t devHandle)",
+    //   e.g.:
+    //
+    //   .pKeepGoingCallback = keepGoingCallback;
+    //
+    //   ...and your function will be called periodically during an
+    //   abortable network operation such as connect/disconnect;
+    //   if it returns true the operation will continue else it
+    //   will be aborted, allowing you immediate control.  If this
+    //   field is set, timeoutSeconds will be ignored.
+    //
+    // - "pUsername" and "pPassword": if you are required to set a
+    //   user name and password to go with the APN value that you
+    //   were given by your service provider, set them here.
+    //
+    // - "authenticationMode": if you MUST give a user name and
+    //   password and your cellular module does NOT support figuring
+    //   out the authentication mode automatically (e.g. SARA-R4xx,
+    //   LARA-R6 and LENA-R8 do not) then you must populate this field
+    //   with the authentication mode that should be used, see
+    //   #uCellNetAuthenticationMode_t in u_cell_net.h; there is no
+    //   harm in populating this field even if the module _does_ support
+    //   figuring out the authentication mode automatically but
+    //   you ONLY NEED TO WORRY ABOUT IT if you were given that user
+    //   name and password with the APN (which is thankfully not usual).
+    //
+    // - "pMccMnc": ONLY required if you wish to connect to a specific
+    //   MCC/MNC rather than to the best available network; should point
+    //   to the null-terminated string giving the MCC and MNC of the PLMN
+    //   to use (for example "23410").
 };
 static const uNetworkType_t gNetType = U_NETWORK_TYPE_CELL;
 #else

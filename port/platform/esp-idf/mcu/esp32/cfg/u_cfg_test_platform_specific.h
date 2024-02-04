@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -75,10 +75,18 @@
  * COMPILE-TIME MACROS: HEAP RELATED
  * -------------------------------------------------------------- */
 
+#ifdef U_CFG_PPP_ENABLE
+/** The minimum free heap space permitted, i.e. what's left for
+ * user code; this is a smaller limit when PPP capability is enabled
+ * since we switch on the IP stack within ESP-IDF.
+ */
+# define U_CFG_TEST_HEAP_MIN_FREE_BYTES (1024 * 170)
+#else
 /** The minimum free heap space permitted, i.e. what's left for
  * user code.
  */
-#define U_CFG_TEST_HEAP_MIN_FREE_BYTES (1024 * 193)
+# define U_CFG_TEST_HEAP_MIN_FREE_BYTES (1024 * 185)
+#endif
 
 /* ----------------------------------------------------------------
  * COMPILE-TIME MACROS: OS RELATED
@@ -86,7 +94,7 @@
 
 /** The stack size to use for the test task created during OS testing.
  */
-#define U_CFG_TEST_OS_TASK_STACK_SIZE_BYTES 1782
+#define U_CFG_TEST_OS_TASK_STACK_SIZE_BYTES 2048
 
 /** The task priority to use for the task created during OS
  * testing: make sure that the priority of the task RUNNING
@@ -95,10 +103,21 @@
  */
 #define U_CFG_TEST_OS_TASK_PRIORITY (U_CFG_OS_PRIORITY_MIN + 6)
 
+#ifndef U_CFG_GNSS_FENCE_USE_GEODESIC
 /** The minimum free stack space permitted for the main task,
  * basically what's left as a margin for user code.
  */
-#define U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES (1024 * 5)
+# define U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES (1024 * 5)
+#else
+/** The minimum free stack space permitted for the main task
+ * when we're running GeographicLib; such a test build has high
+ * stack usage.  Rather than unnecessarily increasing the main
+ * application task stack size in the common sdkconfig.defaults
+ * (CONFIG_MAIN_TASK_STACK_SIZE) we just reduce the limit for this
+ * specific case.
+ */
+# define U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES 1024
+#endif
 
 /* ----------------------------------------------------------------
  * COMPILE-TIME MACROS: HW RELATED

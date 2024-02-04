@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@
 #include "u_cfg_sw.h"
 #include "u_cfg_hw_platform_specific.h"
 #include "u_cfg_os_platform_specific.h" // For U_CFG_OS_YIELD_MS
+#include "u_compiler.h" // U_ATOMIC_XXX() macros
 
 #include "u_error_common.h"
 
@@ -38,8 +39,8 @@
                                               any print or scan function is used. */
 #include "u_port_debug.h"
 #include "u_port.h"
-#include "u_port_heap.h"
 #include "u_port_os.h"
+#include "u_port_heap.h"
 #include "u_port_event_queue.h"
 #include "u_port_uart.h"
 
@@ -406,6 +407,10 @@ static uPortUartData_t *gpUart[U_PORT_MAX_NUM_UARTS + 1] = {NULL};
 // get to the UART data.  +1 is for the usual reason.
 static uPortUartData_t *gpDmaUart[U_PORT_MAX_NUM_DMA_ENGINES + 1][U_PORT_MAX_NUM_DMA_STREAMS] = {NULL};
 
+/** Variable to keep track of the number of UARTs open.
+ */
+static volatile int32_t gResourceAllocCount = 0;
+
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
  * -------------------------------------------------------------- */
@@ -588,6 +593,7 @@ static void uartClose(int32_t handle)
         }
         // And finally remove the UART from the list
         removeUart(pUartData);
+        U_ATOMIC_DECREMENT(&gResourceAllocCount);
     }
 }
 
@@ -931,6 +937,12 @@ void uPortUartDeinit()
     }
 }
 
+int32_t uPortUartPrefix(const char *pPrefix)
+{
+    (void)pPrefix;
+    return U_ERROR_COMMON_NOT_IMPLEMENTED;
+}
+
 // Open a UART instance.
 int32_t uPortUartOpen(int32_t uart, int32_t baudRate,
                       void *pReceiveBuffer,
@@ -1010,7 +1022,11 @@ int32_t uPortUartOpen(int32_t uart, int32_t baudRate,
                     gpioInitStruct.Pin = (1U << U_PORT_STM32F4_GPIO_PIN(pinTx)) |
                                          (1U << U_PORT_STM32F4_GPIO_PIN(pinRx));
                     gpioInitStruct.Mode = LL_GPIO_MODE_ALTERNATE;
-                    gpioInitStruct.Speed = LL_GPIO_SPEED_FREQ_VERY_HIGH;
+                    // Note: we used to set the speed to LL_GPIO_SPEED_FREQ_VERY_HIGH
+                    // but that seemed to cause significant comms failures; setting
+                    // the speed to low (up to 8 MHz) is more reliable and perfectly
+                    // sufficient for what is needed here
+                    gpioInitStruct.Speed = GPIO_SPEED_FREQ_LOW;
                     // Output type doesn't matter, it is overridden by
                     // the alternate function
                     gpioInitStruct.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
@@ -1145,6 +1161,7 @@ int32_t uPortUartOpen(int32_t uart, int32_t baudRate,
                         uartData.uartHandle = nextHandleGet();
                         if (pAddUart(&uartData) != NULL) {
                             handleOrErrorCode = uartData.uartHandle;
+                            U_ATOMIC_INCREMENT(&gResourceAllocCount);
                         }
                     }
                 }
@@ -1678,6 +1695,12 @@ void uPortUartCtsResume(int32_t handle)
 
         U_PORT_MUTEX_UNLOCK(gMutex);
     }
+}
+
+// Get the number of UART interfaces currently open.
+int32_t uPortUartResourceAllocCount()
+{
+    return U_ATOMIC_GET(&gResourceAllocCount);
 }
 
 // End of file

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -392,7 +392,6 @@ int32_t uCellPwrOff(uDeviceHandle_t cellHandle,
  */
 int32_t uCellPwrOffHard(uDeviceHandle_t cellHandle, bool trulyHard,
                         bool (*pKeepGoingCallback) (uDeviceHandle_t));
-
 
 /** If a reboot of the cellular instance is required, for example
  * due to changes that have been made to the configuration,

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,11 +26,20 @@
 # include "u_cfg_override.h" // For a customer's configuration override
 #endif
 
+#include <version.h>
+
+#if KERNEL_VERSION_NUMBER >= ZEPHYR_VERSION(3,1,0)
+#include <zephyr/types.h>
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/uart.h>
+#else
 #include <zephyr/types.h>
 #include <kernel.h>
-#include <drivers/uart.h>
-
 #include <device.h>
+#include <drivers/uart.h>
+#endif
+
 #include <soc.h>
 
 #include "stddef.h"    // NULL, size_t etc.
@@ -41,6 +50,8 @@
 #include "u_cfg_sw.h"
 #include "u_cfg_hw_platform_specific.h"
 #include "u_cfg_os_platform_specific.h" // For U_CFG_OS_YIELD_MS
+#include "u_compiler.h" // U_ATOMIC_XXX() macros
+
 #include "u_error_common.h"
 
 #include "u_port_debug.h"
@@ -48,7 +59,6 @@
 #include "u_port_os.h"
 #include "u_port_event_queue.h"
 #include "u_port_uart.h"
-#include "version.h"
 
 #include "string.h" // For memcpy()
 
@@ -114,6 +124,9 @@ struct uartData_t {
 static uPortMutexHandle_t gMutex = NULL;
 static uPortUartData_t gUartData[U_PORT_UART_MAX_NUM];
 
+// Variable to keep track of the number of UARTs open.
+static volatile int32_t gResourceAllocCount = 0;
+
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
  * -------------------------------------------------------------- */
@@ -165,6 +178,7 @@ static void uartClose(int32_t handle)
     gUartData[handle].pTxData = NULL;
     gUartData[handle].txWritten = 0;
 #endif
+    U_ATOMIC_DECREMENT(&gResourceAllocCount);
 }
 
 static void rxTimer(struct k_timer *timer_id)
@@ -233,7 +247,6 @@ static void uartCb(const struct device *uart, void *user_data)
             }
         }
     }
-
 
     if (uart_irq_tx_ready(uart)) {
         if (gUartData[i].pTxData == NULL) {
@@ -318,7 +331,8 @@ int32_t uPortUartInit()
         for (size_t x = 0; x < sizeof(gUartData) / sizeof(gUartData[0]); x++) {
             const struct device *dev = NULL;
             switch (x) {
-#if KERNEL_VERSION_MAJOR < 3
+#ifdef CONFIG_SERIAL
+# if KERNEL_VERSION_MAJOR < 3
                 case 0:
                     dev = device_get_binding("UART_0");
                     break;
@@ -331,24 +345,23 @@ int32_t uPortUartInit()
                 case 3:
                     dev = device_get_binding("UART_3");
                     break;
-                default:
-                    break;
-#else
+# else
                 case 0:
-                    dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(uart0));
+                    dev = U_DEVICE_DT_GET_OR_NULL(uart0);
                     break;
                 case 1:
-                    dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(uart1));
+                    dev = U_DEVICE_DT_GET_OR_NULL(uart1);
                     break;
                 case 2:
-                    dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(uart2));
+                    dev = U_DEVICE_DT_GET_OR_NULL(uart2);
                     break;
                 case 3:
-                    dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(uart3));
+                    dev = U_DEVICE_DT_GET_OR_NULL(uart3);
                     break;
+# endif
+#endif
                 default:
                     break;
-#endif
             }
 
             gUartData[x].pDevice = dev;
@@ -377,6 +390,12 @@ void uPortUartDeinit()
     }
 }
 
+int32_t uPortUartPrefix(const char *pPrefix)
+{
+    (void)pPrefix;
+    return U_ERROR_COMMON_NOT_IMPLEMENTED;
+}
+
 int32_t uPortUartOpen(int32_t uart, int32_t baudRate,
                       void *pReceiveBuffer,
                       size_t receiveBufferSizeBytes,
@@ -401,52 +420,52 @@ int32_t uPortUartOpen(int32_t uart, int32_t baudRate,
         handleOrErrorCode = U_ERROR_COMMON_INVALID_PARAMETER;
         if ((uart >= 0) &&
             (uart < sizeof(gUartData) / sizeof(gUartData[0])) &&
-            (gUartData[uart].pDevice != NULL) &&
             (pReceiveBuffer == NULL) &&
             (gUartData[uart].pBuffer == NULL) &&
             (pinTx < 0) && (pinRx < 0) && (pinCts < 0) && (pinRts < 0)) {
-
-            gUartData[uart].pBuffer = k_malloc(receiveBufferSizeBytes);
-
-            if (gUartData[uart].pBuffer == NULL) {
+            handleOrErrorCode = (int32_t) U_ERROR_COMMON_PLATFORM;
+            if (gUartData[uart].pDevice != NULL) {
                 handleOrErrorCode = U_ERROR_COMMON_NO_MEMORY;
-            } else {
+                gUartData[uart].pBuffer = k_malloc(receiveBufferSizeBytes);
+                if (gUartData[uart].pBuffer != NULL) {
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
-                k_sem_init(&gUartData[uart].txSem, 0, 1);
-                k_fifo_init(&gUartData[uart].fifoTxData);
-                gUartData[uart].pTxData = NULL;
-                gUartData[uart].txWritten = 0;
+                    k_sem_init(&gUartData[uart].txSem, 0, 1);
+                    k_fifo_init(&gUartData[uart].fifoTxData);
+                    gUartData[uart].pTxData = NULL;
+                    gUartData[uart].txWritten = 0;
 #endif
-                gUartData[uart].receiveBufferSizeBytes = receiveBufferSizeBytes;
-                gUartData[uart].bufferRead = 0;
-                gUartData[uart].bufferWrite = 0;
-                gUartData[uart].bufferFull = false;
-                gUartData[uart].eventQueueHandle = -1;
-                gUartData[uart].eventFilter = 0;
-                gUartData[uart].pEventCallback = NULL;
-                gUartData[uart].pEventCallbackParam = NULL;
-                k_timer_init(&gUartData[uart].rxTimer, rxTimer, NULL);
-                k_timer_user_data_set(&gUartData[uart].rxTimer, (void *)uart);
+                    gUartData[uart].receiveBufferSizeBytes = receiveBufferSizeBytes;
+                    gUartData[uart].bufferRead = 0;
+                    gUartData[uart].bufferWrite = 0;
+                    gUartData[uart].bufferFull = false;
+                    gUartData[uart].eventQueueHandle = -1;
+                    gUartData[uart].eventFilter = 0;
+                    gUartData[uart].pEventCallback = NULL;
+                    gUartData[uart].pEventCallbackParam = NULL;
+                    k_timer_init(&gUartData[uart].rxTimer, rxTimer, NULL);
+                    k_timer_user_data_set(&gUartData[uart].rxTimer, (void *)uart);
 
-                uart_config_get(gUartData[uart].pDevice, &gUartData[uart].config);
-                // Flow control is set in the .overlay file
-                // by including the line:
-                //     hw-flow-control;
-                // in the definition of the relevant UART
-                // so all we need to configure here is the
-                // baud rate as everything else is good at the
-                // default values (8N1).
-                gUartData[uart].config.baudrate = baudRate;
-                uart_configure(gUartData[uart].pDevice, &gUartData[uart].config);
+                    uart_config_get(gUartData[uart].pDevice, &gUartData[uart].config);
+                    // Flow control is set in the .overlay file
+                    // by including the line:
+                    //     hw-flow-control;
+                    // in the definition of the relevant UART
+                    // so all we need to configure here is the
+                    // baud rate as everything else is good at the
+                    // default values (8N1).
+                    gUartData[uart].config.baudrate = baudRate;
+                    uart_configure(gUartData[uart].pDevice, &gUartData[uart].config);
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
-                uart_irq_callback_user_data_set(gUartData[uart].pDevice, uartCb, NULL);
-                uart_irq_rx_enable(gUartData[uart].pDevice);
+                    uart_irq_callback_user_data_set(gUartData[uart].pDevice, uartCb, NULL);
+                    uart_irq_rx_enable(gUartData[uart].pDevice);
 #else
-                k_timer_init(&gUartData[uart].pollTimer, pollTimer, NULL);
-                k_timer_user_data_set(&gUartData[uart].pollTimer, (void *)uart);
-                k_timer_start(&gUartData[uart].pollTimer, K_MSEC(1), K_MSEC(1));
+                    k_timer_init(&gUartData[uart].pollTimer, pollTimer, NULL);
+                    k_timer_user_data_set(&gUartData[uart].pollTimer, (void *)uart);
+                    k_timer_start(&gUartData[uart].pollTimer, K_MSEC(1), K_MSEC(1));
 #endif
-                handleOrErrorCode = uart;
+                    U_ATOMIC_INCREMENT(&gResourceAllocCount);
+                    handleOrErrorCode = uart;
+                }
             }
         }
 
@@ -573,7 +592,7 @@ int32_t uPortUartWrite(int32_t handle, const void *pBuffer,
 
     if (gMutex != NULL) {
         errorCode = U_ERROR_COMMON_INVALID_PARAMETER;
-        if ((pBuffer != NULL) && (sizeBytes > 0) && (handle >= 0) &&
+        if ((pBuffer != NULL) && (sizeBytes > 0) && (sizeBytes < UINT16_MAX) && (handle >= 0) &&
             (handle < sizeof(gUartData) / sizeof(gUartData[0])) &&
             (gUartData[handle].pDevice != NULL)) {
 
@@ -593,7 +612,7 @@ int32_t uPortUartWrite(int32_t handle, const void *pBuffer,
             struct uartData_t data;
             data.handle = handle;
             data.pData = (void *)pBuffer;
-            data.len = sizeBytes;
+            data.len = (uint16_t) sizeBytes;
 
             k_fifo_put(&gUartData[handle].fifoTxData, &data);
             uart_irq_tx_enable(gUartData[handle].pDevice);
@@ -903,6 +922,12 @@ int32_t uPortUartCtsSuspend(int32_t handle)
 void uPortUartCtsResume(int32_t handle)
 {
     (void) handle;
+}
+
+// Get the number of UART interfaces currently open.
+int32_t uPortUartResourceAllocCount()
+{
+    return U_ATOMIC_GET(&gResourceAllocCount);
 }
 
 // End of file

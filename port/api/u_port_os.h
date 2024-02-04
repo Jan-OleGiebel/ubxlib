@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -55,6 +55,102 @@ extern "C" {
  */
 #define U_PORT_EXECUTABLE_CHUNK_NO_FLAGS      0
 
+#ifndef U_PORT_OS_DEBUG_PRINT_PREFIX
+/** The string to prefix all debug prints from this file with:
+ * only used if U_PORT_OS_DEBUG_PRINT is defined.  Defining
+ * U_PORT_OS_DEBUG_PRINT gives you some primitive printf()-style
+ * debug if you can't figure out which OS resource your code is
+ * clinging-on to.
+ */
+# define U_PORT_OS_DEBUG_PRINT_PREFIX "U_PORT_OS: "
+#endif
+
+#ifdef U_PORT_OS_DEBUG_PRINT
+/** Macro to print out stuff on task creation.  This and the other
+ * macros below are effective if U_PORT_OS_DEBUG_PRINT is defined and
+ * may be useful if you are trying to track down a resource leak:
+ * capture the log and load it into an editor such as Notepad++ where
+ * you can highlight a word, a hex address, and see if the same address
+ * appears later in the same log (meaning that resource was free'd),
+ * or not.
+ *
+ * Note that use of these macros obviously affects timing etc. and, on
+ * platforms such as STM32F4, may cause memory leaks themselves; do not
+ * use them routinely and best only use them on platforms such as Windows
+ * or Linux where there are few timing/memory constraints.
+ */
+# define U_PORT_OS_DEBUG_PRINT_TASK_CREATE(handle, pName, stackSizeBytes, priority)            \
+            if (pName == NULL) {                                                               \
+                pName = "";                                                                    \
+            }                                                                                  \
+            uPortLog("%s+T %p \"%s\" stack %d priority %d\n",                                  \
+                     U_PORT_OS_DEBUG_PRINT_PREFIX, handle, pName, stackSizeBytes, priority)
+
+/** Macro to print out stuff on task deletion.
+ */
+# define U_PORT_OS_DEBUG_PRINT_TASK_DELETE(handle)                                             \
+            uPortLog("%s-T %p\n", U_PORT_OS_DEBUG_PRINT_PREFIX, handle)
+
+/** Macro to print out stuff on queue creation.
+ */
+# define U_PORT_OS_DEBUG_PRINT_QUEUE_CREATE(handle, queueLength, itemSizeBytes)                \
+            uPortLog("%s+Q %p length %d item size %d\n\n",                                     \
+                     U_PORT_OS_DEBUG_PRINT_PREFIX, handle, queueLength, itemSizeBytes)
+
+/** Macro to print out stuff on queue deletion.
+ */
+# define U_PORT_OS_DEBUG_PRINT_QUEUE_DELETE(handle)                                             \
+            uPortLog("%s-Q %p\n", U_PORT_OS_DEBUG_PRINT_PREFIX, handle)
+
+/** Macro to print out stuff on mutex creation.
+ */
+# define U_PORT_OS_DEBUG_PRINT_MUTEX_CREATE(handle)                                             \
+            uPortLog("%s+M %p\n", U_PORT_OS_DEBUG_PRINT_PREFIX, handle)
+
+/** Macro to print out stuff on mutex deletion.
+ */
+# define U_PORT_OS_DEBUG_PRINT_MUTEX_DELETE(handle)                                             \
+            uPortLog("%s-M %p\n", U_PORT_OS_DEBUG_PRINT_PREFIX, handle)
+
+/** Macro to print out stuff on semaphore creation.
+ */
+# define U_PORT_OS_DEBUG_PRINT_SEMAPHORE_CREATE(handle, initialCount, limit)                    \
+            uPortLog("%s+S %p initial count %d limit %d\n",                                     \
+                     U_PORT_OS_DEBUG_PRINT_PREFIX, handle, initialCount, limit)
+
+/** Macro to print out stuff on queue deletion.
+ */
+# define U_PORT_OS_DEBUG_PRINT_SEMAPHORE_DELETE(handle)                                        \
+            uPortLog("%s-S %p\n", U_PORT_OS_DEBUG_PRINT_PREFIX, handle)
+
+/** Macro to print out stuff on timer creation.
+ */
+# define U_PORT_OS_DEBUG_PRINT_TIMER_CREATE(handle, pName, intervalMs, periodic)               \
+            if (pName == NULL) {                                                               \
+                pName = "";                                                                    \
+            }                                                                                  \
+            uPortLog("%s+t %p \"%s\" interval %u %s\n",                                        \
+                     U_PORT_OS_DEBUG_PRINT_PREFIX, handle, pName, intervalMs,                  \
+                     periodic ? "periodic" : "one-shot")
+
+/** Macro to print out stuff on timer deletion.
+ */
+# define U_PORT_OS_DEBUG_PRINT_TIMER_DELETE(handle)                                            \
+            uPortLog("%s-t %p\n", U_PORT_OS_DEBUG_PRINT_PREFIX, handle)
+
+#else
+# define U_PORT_OS_DEBUG_PRINT_TASK_CREATE(handle, pName, stackSizeBytes, priority)
+# define U_PORT_OS_DEBUG_PRINT_TASK_DELETE(handle)
+# define U_PORT_OS_DEBUG_PRINT_QUEUE_CREATE(handle, queueLength, itemSizeBytes)
+# define U_PORT_OS_DEBUG_PRINT_QUEUE_DELETE(handle)
+# define U_PORT_OS_DEBUG_PRINT_MUTEX_CREATE(handle)
+# define U_PORT_OS_DEBUG_PRINT_MUTEX_DELETE(handle)
+# define U_PORT_OS_DEBUG_PRINT_SEMAPHORE_CREATE(handle, initialCount, limit)
+# define U_PORT_OS_DEBUG_PRINT_SEMAPHORE_DELETE(handle)
+# define U_PORT_OS_DEBUG_PRINT_TIMER_CREATE(handle, pName, intervalMs, periodic)
+# define U_PORT_OS_DEBUG_PRINT_TIMER_DELETE(handle)
+#endif
+
 /* ----------------------------------------------------------------
  * TYPES
  * -------------------------------------------------------------- */
@@ -104,6 +200,16 @@ typedef uint32_t uPortExeChunkFlags_t;
 /** The function signature for a timer callback.
  */
 typedef void (pTimerCallback_t) (const uPortTimerHandle_t, void *);
+
+/** The possible types of OS resource.
+ */
+typedef enum {
+    U_PORT_OS_RESOURCE_TYPE_TASK,
+    U_PORT_OS_RESOURCE_TYPE_QUEUE,
+    U_PORT_OS_RESOURCE_TYPE_MUTEX,
+    U_PORT_OS_RESOURCE_TYPE_SEMAPHORE,
+    U_PORT_OS_RESOURCE_TYPE_TIMER
+} uPortOsResourceType_t;
 
 /* ----------------------------------------------------------------
  * FUNCTIONS: TASKS
@@ -272,7 +378,6 @@ int32_t uPortQueueReceive(const uPortQueueHandle_t queueHandle,
  */
 int32_t uPortQueueReceiveIrq(const uPortQueueHandle_t queueHandle,
                              void *pEventData);
-
 
 /** Try to receive from the given queue, waiting for the given
  * time for something to arrive.
@@ -456,7 +561,7 @@ int32_t uPortSemaphoreGiveIrq(const uPortSemaphoreHandle_t semaphoreHandle);
  */
 int32_t uPortTimerCreate(uPortTimerHandle_t *pTimerHandle,
                          const char *pName,
-                         pTimerCallback_t pCallback,
+                         pTimerCallback_t *pCallback,
                          void *pCallbackParam,
                          uint32_t intervalMs,
                          bool periodic);
@@ -534,6 +639,46 @@ void *uPortAcquireExecutableChunk(void *pChunkToMakeExecutable,
                                   size_t *pSize,
                                   uPortExeChunkFlags_t flags,
                                   uPortChunkIndex_t index);
+
+/* ----------------------------------------------------------------
+ * FUNCTIONS: DEBUGGING/MONITORING
+ * -------------------------------------------------------------- */
+
+/** Get the number of OS resources (tasks, queues, semaphores, mutexes
+ * or timers) currently allocated; this may be used as a basic check for
+ * heap monitoring.
+ *
+ * If this function is not implemented a #U_WEAK implementation
+ * provided in u_port_resource.c will return zero.
+ *
+ * @return   the number of OS resources (tasks, queues, semaphores,
+ *           mutexes or timers) currently in use.
+ */
+int32_t uPortOsResourceAllocCount();
+
+/** Used ONLY for resource accounting: this function allows the code
+ * to indicate that an OS resource (task, queue, semaphore, mutex or
+ * timer) of the given type has been created and will NEVER be destroyed.
+ *
+ * This function is implemented in the common file u_port_resource.c,
+ * it does not need to be implemented separately by each port.
+ *
+ * @param type the resource type.
+ */
+void uPortOsResourcePerpetualAdd(uPortOsResourceType_t type);
+
+/** Get the number of resources that have been logged as "perpetual"
+ * by calls to uPortOsResourcePerpetualAdd(); this is ONLY intended to
+ * be used by the ubxlib test code.
+ *
+ * This function is implemented in the common file u_port_resource.c,
+ * it does not need to be implemented separately by each port.
+ *
+ * @return the number of OS resources (tasks, queues, semaphores,
+ *         mutexes or timers) that have been created that will
+ *         not destroyed.
+ */
+int32_t uPortOsResourcePerpetualCount();
 
 #ifdef __cplusplus
 }

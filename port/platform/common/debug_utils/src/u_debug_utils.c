@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -85,6 +85,8 @@ static void inactivityTask(void *pParam)
     int32_t lastActivityCounter = -1;
     int32_t inactiveCounter = 0;
     volatile  int32_t *pActivityCounter = (volatile  int32_t *)pParam;
+    // Mark this as a perpetual task for accounting purposes
+    uPortOsResourcePerpetualAdd(U_PORT_OS_RESOURCE_TYPE_TASK);
     while (1) {
         uPortTaskBlock(1000 * U_DEBUG_UTILS_INACTIVITY_TASK_CHECK_PERIOD_SEC);
         if (*pActivityCounter == lastActivityCounter) {

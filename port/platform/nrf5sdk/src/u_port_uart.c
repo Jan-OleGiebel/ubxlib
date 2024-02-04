@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,6 +43,7 @@
 #include "u_cfg_sw.h"
 #include "u_cfg_hw_platform_specific.h"
 #include "u_cfg_os_platform_specific.h" // For U_CFG_OS_YIELD_MS
+#include "u_compiler.h" // U_ATOMIC_XXX() macros
 
 #include "u_error_common.h"
 
@@ -51,8 +52,8 @@
                                               any print or scan function is used. */
 #include "u_port_debug.h"
 #include "u_port.h"
-#include "u_port_heap.h"
 #include "u_port_os.h"
+#include "u_port_heap.h"
 #include "u_port_event_queue.h"
 #include "u_port_uart.h"
 #include "u_port_private.h"
@@ -187,9 +188,14 @@ static uPortUartData_t gUartData[] = {NRF_UARTE1,
 #  endif
 #endif
 
+/** Variable to keep track of the number of UARTs open.
+ */
+static volatile int32_t gResourceAllocCount = 0;
+
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
  * -------------------------------------------------------------- */
+
 // Retrieve total number of bytes received
 static uint32_t uartGetRxdBytes(uPortUartData_t *pUartData)
 {
@@ -298,6 +304,7 @@ static void uartClose(int32_t handle)
             gUartData[handle].txWritten = 0;
             uPortSemaphoreDelete(gUartData[handle].txSem);
             uPortQueueDelete(gUartData[handle].txQueueHandle);
+            U_ATOMIC_DECREMENT(&gResourceAllocCount);
         }
     }
 }
@@ -367,7 +374,6 @@ static void uartIrqHandler(uPortUartData_t *pUartData)
         nrf_uarte_event_clear(pReg, NRF_UARTE_EVENT_ENDTX);
         nrf_uarte_task_trigger(pReg, NRF_UARTE_TASK_STOPTX);
     }
-
 
     if (nrf_uarte_event_check(pReg, NRF_UARTE_EVENT_TXSTOPPED)) {
         if (pUartData->disableTxIrq) {
@@ -566,6 +572,12 @@ void uPortUartDeinit()
     }
 }
 
+int32_t uPortUartPrefix(const char *pPrefix)
+{
+    (void)pPrefix;
+    return U_ERROR_COMMON_NOT_IMPLEMENTED;
+}
+
 // Open a UART instance.
 int32_t uPortUartOpen(int32_t uart, int32_t baudRate,
                       void *pReceiveBuffer,
@@ -663,6 +675,7 @@ int32_t uPortUartOpen(int32_t uart, int32_t baudRate,
                 NRFX_IRQ_PRIORITY_SET(getIrqNumber((void *) pReg),
                                       NRFX_UARTE_DEFAULT_CONFIG_IRQ_PRIORITY);
                 NRFX_IRQ_ENABLE(getIrqNumber((void *) (pReg)));
+                U_ATOMIC_INCREMENT(&gResourceAllocCount);
                 // Return the handle
                 handleOrErrorCode = gUartData[uart].uartHandle;
             }
@@ -1124,6 +1137,12 @@ void uPortUartCtsResume(int32_t handle)
 
         U_PORT_MUTEX_UNLOCK(gMutex);
     }
+}
+
+// Get the number of UART interfaces currently open.
+int32_t uPortUartResourceAllocCount()
+{
+    return U_ATOMIC_GET(&gResourceAllocCount);
 }
 
 // End of file

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox Cambourne Ltd
+ * Copyright 2019-2024 u-blox Cambourne Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,7 +68,7 @@
 #define SOCKET_THREAD_STACK_SIZE 8*1024
 
 // Socket echo server URL
-#define TCP_SERVER_NAME "ubxlib.redirectme.net"
+#define TCP_SERVER_NAME "ubxlib.com"
 
 // Socket echo server port
 #define TCP_SERVER_PORT 5055
@@ -111,7 +111,8 @@ static uDeviceCfg_t gDeviceCfgCell = {
             .pinTxd = -1,
             .pinRxd = -1,
             .pinCts = -1,
-            .pinRts = -1
+            .pinRts = -1,
+            .pPrefix = NULL // Relevant for Linux only
         }
     }
 };
@@ -121,7 +122,6 @@ static uNetworkCfgCell_t gDeviceNetworkCfgCell = {
     .pApn = NULL,
     .timeoutSeconds = 240
 };
-
 
 // MQTT thread handle
 static uPortTaskHandle_t mqttThreadHandle;

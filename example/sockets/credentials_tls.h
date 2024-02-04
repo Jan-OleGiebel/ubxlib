@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@
 #define _CREDENTIALS_TLS_H_
 
 /** @file
- * @brief Credentials to use with the main_tls.c example.
+ * @brief Credentials to use with the main_tls.c and main_dtls.c examples.
  */
 
 #ifdef __cplusplus
@@ -46,8 +46,8 @@ extern const char *gpUEchoServerClientCertPem;
 extern const char gUEchoServerClientCertHash[];
 extern const char *gpUEchoServerClientKeyPem;
 extern const char gUEchoServerClientKeyHash[];
-extern const char *gpUEchoServerServerCertPem;
-extern const char gUEchoServerServerCertHash[];
+extern const char *gpUEchoServerCaCertPem;
+extern const char gUEchoServerCaCertHash[];
 
 #ifdef __cplusplus
 }

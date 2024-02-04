@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -244,7 +244,9 @@ uMqttClientContext_t *pUMqttClientOpen(uDeviceHandle_t devHandle,
 int32_t uMqttClientOpenResetLastError();
 
 /** Close the given MQTT client session.  If the session is
- * connected it will be disconnected first.
+ * connected it will be disconnected first.  pContext should NOT
+ * BE USED after this function has returned; you may wish to set
+ * it to NULL for safety.
  *
  * Note: when MQTT is deinitialised not all memory associated with it
  * is always immediately reclaimed; if you wish to reclaim memory before
@@ -292,13 +294,11 @@ int32_t uMqttClientDisconnect(const uMqttClientContext_t *pContext);
 bool uMqttClientIsConnected(const uMqttClientContext_t *pContext);
 
 /** Set a callback to be called when new messages are available to be
- * read; the callback may then call uMqttClientGetUnread() to get
- * the number of unread messages.  There is a single, static,
- * callback, hence a second call here will simple replace the previous
- * callback. Your callback will only be called when the number of
- * unread messages has increased.
+ * read.  There is a single, static, callback, hence a second call here
+ * will simple replace the previous callback. Your callback will only
+ * be called when the number of unread messages has increased.
  *
- * NOTE: it would be tempting to read a new unread message in your message
+ * IMPORTANT: it would be tempting to read a new unread message in your message
  * callback.  However, note that if your device has been out of coverage
  * while you are subscribed to an MQTT topic and then returns to coverage,
  * there could be a deluge of messages that land all at once.  Hence it is
@@ -412,6 +412,13 @@ int32_t uMqttClientSetDisconnectCallback(const uMqttClientContext_t *pContext,
  * @param retain            if true the message will be kept
  *                          by the broker across MQTT disconnects/
  *                          connects, else it will be cleared.
+ *                          Note: MQTT permits a single retained
+ *                          message per topic, if this flag is
+ *                          true you are setting that single
+ *                          retained message; to clear it, send
+ *                          an empty message (pMessage NULL,
+ *                          messageSizeBytes zero) with retain
+ *                          set to true.
  * @return                  zero on success else negative error code.
  */
 int32_t uMqttClientPublish(uMqttClientContext_t *pContext,

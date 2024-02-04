@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -165,23 +165,23 @@ int32_t uGnssPosGet(uDeviceHandle_t gnssHandle,
  * with any transport, however see uGnssPosGetStreamedStart() if you want
  * streamed position.
  *
- * Should you wish to cancel a request, or start a new request without
- * waiting for the answer to the previous request, then you must call
- * uGnssPosGetStop() first (otherwise #U_ERROR_COMMON_NO_MEMORY will
- * be returned).  uGnssPosGetStart() creates a mutex for thread-safety
- * which remains in memory until the GNSS API is deinitialised; should
- * you wish to free the memory occupied by the mutex then calling
- * uGnssPosGetStop() will also do that.
+ * Should you wish to cancel a request, call uGnssPosGetStop().  If
+ * uGnssPosGetStart() is called again before position has been established,
+ * the previous attempt will be stopped and a new one started.
+ * uGnssPosGetStart() creates a mutex for thread-safety which remains
+ * in memory until the GNSS API is deinitialised; should you wish to free
+ * the memory occupied by the mutex then calling uGnssPosGetStop() will
+ * also do that.
  *
  * @param gnssHandle     the handle of the GNSS instance to use.
- * @param[in] pCallback  a callback that will be called when a fix has been
- *                       obtained.  The parameters to the callback are as
- *                       described in uGnssPosGet() except that they are
- *                       not pointers.  The position fix is only valid
- *                       if the second int32_t, errorCode, is zero but
- *                       a timeUtc value may still be included even
- *                       if a position fix has failed (timeUtc will be
- *                       set to -1 if the UTC time is not valid).
+ * @param[in] pCallback  a callback that will be called when a navigation
+ *                       a message arrives.  The parameters to the
+ *                       callback are as described in uGnssPosGet()
+ *                       except that they are not pointers.  The position
+ *                       fix is only valid if the second int32_t, errorCode,
+ *                       is zero but a timeUtc value may still be included
+ *                       even if a position fix has failed (timeUtc will
+ *                       be set to -1 if the UTC time is not valid).
  *                       Note: don't call back into this API from your
  *                       pCallback, it could lead to recursion.
  * @return               zero on success or negative error code on
@@ -211,7 +211,7 @@ void uGnssPosGetStop(uDeviceHandle_t gnssHandle);
 /** Get position readings streamed constantly to a callback; this will
  * only work with one of the streamed transports (for instance UART, I2C,
  * SPI or Virtual Serial), it will NOT work with AT-command-based transport
- * (#U_GNSS_TRANSPORT_AT).  uGnssPosGetStart() allocates some storage
+ * (#U_GNSS_TRANSPORT_AT).  uGnssPosGetStreamedStart() allocates some storage
  * which remains in memory until the GNSS API is deinitialised; should
  * you wish to free that memory then calling uGnssPosGetStreamedStop()
  * will also do that.
@@ -226,7 +226,10 @@ void uGnssPosGetStop(uDeviceHandle_t gnssHandle);
  * Note: this uses one of the #U_GNSS_MSG_RECEIVER_MAX_NUM message
  * handles from the uGnssMsg API.
  *
- * To cancel streamed position, call uGnssPosGetStreamedStop().
+ * To cancel streamed position, call uGnssPosGetStreamedStop().  If
+ * uGnssPosGetStreamedStart() is called again without calling
+ * uGnssPosGetStreamedStop() first, the new settings will be applied (i.e.
+ * as if uGnssPosGetStreamedStop() had been called first).
  *
  * @param gnssHandle       the handle of the GNSS instance to use.
  * @param rateMs           the desired time between position fixes in
@@ -235,15 +238,25 @@ void uGnssPosGetStop(uDeviceHandle_t gnssHandle);
  *                         the navigation count (i.e. the number of measurements
  *                         required to make a navigation solution) will
  *                         be 1.  If you want to use a navigation count
- *                         greater 1 one you may set that by calling
+ *                         greater than 1 you may set that by calling
  *                         uGnssCfgSetRate() before this function and
  *                         then setting rateMs here to -1, which will leave
  *                         the rate settings unchanged.
- * @param[in] pCallback    a callback that will be called when fixes are
- *                         obtained.  The parameters to the callback are as
- *                         described in uGnssPosGetStart().
+ * @param[in] pCallback    a callback that will be called when navigation
+ *                         messages arrive.  The parameters to the callback
+ *                         are as described in uGnssPosGetStart().
  *                         Note: don't call back into this API from your
  *                         pCallback, it could lead to recursion.
+ *                         IMPORTANT: you should check the value of
+ *                         errorCode before treating the parameters:
+ *                         a value of zero means that a position fix
+ *                         has been achieved but a value of
+ *                         #U_ERROR_COMMON_TIMEOUT may be used to
+ *                         indicate that a message has arrived from the
+ *                         GNSS device giving no position fix or a
+ *                         time-only fix.  Where no fix is achieved the
+ *                         variables will be populated with out of range
+ *                         values (i.e. INT_MIN or -1 as appopriate).
  * @return                 zero on success or negative error code on
  *                         failure.
  */

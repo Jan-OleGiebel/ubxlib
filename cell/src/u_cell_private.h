@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -185,6 +185,13 @@ extern "C" {
  */
 #define U_CELL_PRIVATE_DTR_POWER_SAVING_PIN_ON_STATE(pinStates) (int32_t) (((pinStates) >> U_CELL_PRIVATE_DTR_POWER_SAVING_PIN_BIT_ON_STATE) & 1)
 
+/** The number of digits in a logical cell ID; note that
+ * it is read as a string and this value does NOT include
+ * room for the terminator, hence for sizing of storage
+ * you should add one.
+ */
+#define U_CELL_PRIVATE_CELL_ID_LOGICAL_SIZE  8
+
 /* ----------------------------------------------------------------
  * TYPES
  * -------------------------------------------------------------- */
@@ -200,7 +207,6 @@ typedef enum {
     U_CELL_PRIVATE_FEATURE_CSCON,
     U_CELL_PRIVATE_FEATURE_ROOT_OF_TRUST,
     U_CELL_PRIVATE_FEATURE_ASYNC_SOCK_CLOSE,
-    U_CELL_PRIVATE_FEATURE_SECURITY_C2C,
     U_CELL_PRIVATE_FEATURE_DATA_COUNTERS,
     U_CELL_PRIVATE_FEATURE_SECURITY_TLS_IANA_NUMBERING,
     U_CELL_PRIVATE_FEATURE_SECURITY_TLS_SERVER_NAME_INDICATION,
@@ -226,12 +232,18 @@ typedef enum {
     U_CELL_PRIVATE_FEATURE_DEEP_SLEEP_URC,
     U_CELL_PRIVATE_FEATURE_EDRX,
     U_CELL_PRIVATE_FEATURE_MQTTSN,
+    U_CELL_PRIVATE_FEATURE_MQTTSN_SECURITY,
     U_CELL_PRIVATE_FEATURE_CTS_CONTROL,
     U_CELL_PRIVATE_FEATURE_SOCK_SET_LOCAL_PORT,
     U_CELL_PRIVATE_FEATURE_FOTA,
     U_CELL_PRIVATE_FEATURE_UART_POWER_SAVING,
     U_CELL_PRIVATE_FEATURE_CMUX,
-    U_CELL_PRIVATE_FEATURE_SNR_REPORTED
+    U_CELL_PRIVATE_FEATURE_SNR_REPORTED,
+    U_CELL_PRIVATE_FEATURE_AUTHENTICATION_MODE_AUTOMATIC,
+    U_CELL_PRIVATE_FEATURE_LWM2M,
+    U_CELL_PRIVATE_FEATURE_UCGED,
+    U_CELL_PRIVATE_FEATURE_HTTP,
+    U_CELL_PRIVATE_FEATURE_PPP
 } uCellPrivateFeature_t;
 
 /** The characteristics that may differ between cellular modules.
@@ -261,9 +273,9 @@ typedef struct {
     int32_t atTimeoutSeconds; /**< The time to wait for completion of an
                                    AT command, i.e. from sending ATblah to
                                    receiving OK or ERROR back. */
-    int32_t commandDelayMs; /**< How long to wait between the end of
-                                 one AT command and the start of the
-                                 next. */
+    int32_t commandDelayDefaultMs; /**< How long to wait between the end of
+                                        one AT command and the start of the
+                                        next, default value. */
     int32_t responseMaxWaitMs; /**< The maximum response time one can
                                     expect from the cellular module.
                                     This is usually quite large since,
@@ -285,7 +297,8 @@ typedef struct {
                                        module. */
     uint64_t featuresBitmap; /**< a bit-map of the uCellPrivateFeature_t
                                   characteristics of this module. */
-    int32_t defaultMuxChannelGnss; /**< the default mux channel to use for attached/embedded GNSS. */
+    int32_t defaultMuxChannelGnss; /**< the default mux channel to use for attached/embedded GNSS, -1 if not supported. */
+    int32_t atCFunRebootCommand; /** Normally 15, but in some cases 16. */
 } uCellPrivateModule_t;
 
 /** The radio parameters.
@@ -295,7 +308,8 @@ typedef struct {
     int32_t rsrpDbm;  /**< The RSRP of the serving cell. */
     int32_t rsrqDb;   /**< The RSRQ of the serving cell. */
     int32_t rxQual;   /**< The RxQual of the serving cell. */
-    int32_t cellId;   /**< The cell ID of the serving cell. */
+    int32_t cellIdPhysical;  /**< The physical cell ID of the serving cell (LTE only). */
+    int32_t cellIdLogical;   /**< The logical cell ID of the serving cell. */
     int32_t earfcn;   /**< The EARFCN of the serving cell. */
     int32_t snrDb;   /**< The SINR as reported by the module (LTE only). */
 } uCellPrivateRadioParameters_t;
@@ -310,6 +324,20 @@ typedef struct uCellPrivateNet_t {
     uCellNetRat_t rat;
     struct uCellPrivateNet_t *pNext;
 } uCellPrivateNet_t;
+
+/** Private version of the possible registration types:
+ * this separates out the packet switched domains for CEREG and CGREG,
+ * necessary since LENA-R8 always reports both separately in all cases
+ * and so we need to record both and decide on the truth afterwards.
+ */
+//lint -estring(788, uCellPrivateNetRegType_t::U_CELL_PRIVATE_NET_REG_TYPE_MAX_NUM)
+// Suppress not used within defaulted switch
+typedef enum {
+    U_CELL_PRIVATE_NET_REG_TYPE_CREG, /**< circuit switched (AT+CREG). */
+    U_CELL_PRIVATE_NET_REG_TYPE_CGREG,
+    U_CELL_PRIVATE_NET_REG_TYPE_CEREG,
+    U_CELL_PRIVATE_NET_REG_TYPE_MAX_NUM
+} uCellPrivateNetRegType_t;
 
 /** Context for the cell loc API.
  */
@@ -415,8 +443,10 @@ typedef struct uCellPrivateInstance_t {
                                      or back was performed. */
     int32_t lastDtrPinToggleTimeMs; /**< The last time DTR was toggled for power-saving. */
     uCellNetStatus_t
-    networkStatus[U_CELL_NET_REG_DOMAIN_MAX_NUM]; /**< Registation status in each domain. */
-    uCellNetRat_t rat[U_CELL_NET_REG_DOMAIN_MAX_NUM];  /**< The active RAT for each domain. */
+    networkStatus[U_CELL_PRIVATE_NET_REG_TYPE_MAX_NUM]; /**< Registation status for each type, separating CREG, CGREG and CEREG. */
+    uCellNetRat_t
+    rat[U_CELL_PRIVATE_NET_REG_TYPE_MAX_NUM];  /**< The active RAT for each registration type. */
+    int32_t lastEmmRejectCause; /**< Used by uCellNetGetLastEmmRejectCause() only. */
     uCellPrivateRadioParameters_t radioParameters; /**< The radio parameters. */
     int32_t startTimeMs;     /**< Used while connecting and scanning. */
     int32_t connectedAtMs;   /**< When a connection was last established,
@@ -434,8 +464,10 @@ typedef struct uCellPrivateInstance_t {
     void (*pGreetingCallback) (uDeviceHandle_t, void *);
     void *pGreetingCallbackParameter;
     uCellPrivateNet_t *pScanResults;    /**< Anchor for list of network scan results. */
+    uCellNetAuthenticationMode_t authenticationMode; /**< Authentication mode for PDP context. */
     int32_t sockNextLocalPort;
-    void *pSecurityC2cContext;  /**< Hook for a chip to chip security context. */
+    uint32_t gnssAidMode;  /**< A bit-map of the types of aiding to use (AssistNow Online, Offline, Autonomous, etc.). */
+    uint32_t gnssSystemTypesBitMap;  /**< A bit-map of the GNSS system types (GPS, GLONASS, etc.) a GNSS chip should use. */
     volatile void *pMqttContext; /**< Hook for MQTT context, volatile as it
                                       can be populared by a URC in a different thread. */
     uCellPrivateLocContext_t *pLocContext; /**< Hook for a location context. **/
@@ -452,6 +484,10 @@ typedef struct uCellPrivateInstance_t {
     void *pHttpContext;  /**< Hook for a HTTP context. */
     void *pMuxContext; /**< CMUX context, lodged here as a void * to
                             avoid spreading its types all over. */
+    void *pCellTimeContext;  /**< Hook for CellTime context. */
+    void *pCellTimeCellSyncContext;   /**< Hook for CellTime cell synchronisation context. */
+    void *pFenceContext; /**< Storage for a uGeofenceContext_t. */
+    void *pPppContext; /**< Hook for a PPP connection context. */
     struct uCellPrivateInstance_t *pNext;
 } uCellPrivateInstance_t;
 
@@ -480,11 +516,20 @@ extern uPortMutexHandle_t gUCellPrivateMutex;
  * FUNCTIONS
  * -------------------------------------------------------------- */
 
+/** Abort an AT command; only works if the AT command is actually
+ * an abortable one according to the AT manual.
+ *
+ * Note: gUCellPrivateMutex should be locked before this is called.
+ *
+ * @param pInstance a pointer to the instance.
+ */
+void uCellPrivateAbortAtCommand(const uCellPrivateInstance_t *pInstance);
+
 /** Return true if the given buffer contains only numeric
  * characters (0 to 9).
  *
  * @param pBuffer     pointer to the buffer.
- * @param bufferSize  number of characters at pBuffer.
+ * @param bufferSize  number of characters in pBuffer.
  * @return            true if all the characters in pBuffer are
  *                    numeric characters, else false.
  */
@@ -499,11 +544,48 @@ bool uCellPrivateIsNumeric(const char *pBuffer, size_t bufferSize);
  */
 uCellPrivateInstance_t *pUCellPrivateGetInstance(uDeviceHandle_t cellHandle);
 
+/** Convert RSRP in 3GPP TS 36.133 format to dBm.
+ *
+ * Returns 0 if the number is not known.
+ * 0: -141 dBm or less,
+ * 1..96: from -140 dBm to -45 dBm with 1 dBm steps,
+ * 97: -44 dBm or greater,
+ * 255: not known or not detectable.
+ *
+ * @param rsrp  the RSRP in 3GPP TS 36.133 units.
+ * @return      the RSRP in dBm.
+ */
+int32_t uCellPrivateRsrpToDbm(int32_t rsrp);
+
+/** Convert RSRQ in 3GPP TS 36.133 format to dB.
+ *
+ * Returns 0x7FFFFFFF if the number is not known.
+ * -30: less than -34 dB
+ * -29..46: from -34 dB to 2.5 dB with 0.5 dB steps
+ *          where 0 is -19.5 dB
+ * 255: not known or not detectable.
+ *
+ * @param rsrq  the RSRP in 3GPP TS 36.133 units.
+ * @return      the RSRP in dBm.
+ */
+int32_t uCellPrivateRsrqToDb(int32_t rsrq);
+
 /** Set the radio parameters back to defaults.
  *
- * @param pParameters pointer to a radio parameters structure.
+ * @param pParameters             pointer to a radio parameters
+ *                                structure.
+ * @param leaveCellIdLogicalAlone on an LTE RAT the logical cell
+ *                                ID cannot be read from the
+ *                                module, instead it has to be
+ *                                captured from the end of the
+ *                                +CEREG URC when it happens
+ *                                to be emitted; this parameter
+ *                                should be set to true to
+ *                                avoid destroying that ephemeral
+ *                                value.
  */
-void uCellPrivateClearRadioParameters(uCellPrivateRadioParameters_t *pParameters);
+void uCellPrivateClearRadioParameters(uCellPrivateRadioParameters_t *pParameters,
+                                      bool leaveCellIdLogicalAlone);
 
 /** Clear the dynamic parameters of an instance, so the network
  * status, the active RAT and the radio parameters.  This should
@@ -624,14 +706,6 @@ void uCellPrivateScanFree(uCellPrivateNet_t **ppScanResults);
 //lint -esym(759, pUCellPrivateGetModule) etc. since use of this function
 //lint -esym(765, pUCellPrivateGetModule) may be compiled-out in various ways
 const uCellPrivateModule_t *pUCellPrivateGetModule(uDeviceHandle_t cellHandle);
-
-/** Remove the chip to chip security context for the given instance.
- *
- * Note: gUCellPrivateMutex should be locked before this is called.
- *
- * @param pInstance   a pointer to the cellular instance.
- */
-void uCellPrivateC2cRemoveContext(uCellPrivateInstance_t *pInstance);
 
 /** Remove the location context for the given instance.
  *
@@ -884,6 +958,50 @@ int32_t uCellPrivateSetGnssProfile(const uCellPrivateInstance_t *pInstance,
  */
 int32_t uCellPrivateGetGnssProfile(const uCellPrivateInstance_t *pInstance,
                                    char *pServerName, size_t sizeBytes);
+
+/** Check whether there is a GNSS chip on-board the cellular module.
+ *
+ * @param pInstance      a pointer to the cellular instance.
+ * @return            true if there is a GNSS chip inside the cellular
+ *                    module, else false.
+ */
+bool uCellPrivateGnssInsideCell(const uCellPrivateInstance_t *pInstance);
+
+/** Remove the CellTime context for the given instance.
+ *
+ * Note:  gUCellPrivateMutex should be locked before this is called.
+ *
+ * @param pInstance   a pointer to the cellular instance.
+ */
+void uCellPrivateCellTimeRemoveContext(uCellPrivateInstance_t *pInstance);
+
+/** Get an ID string from the cellular module.
+ *
+ * Note:  gUCellPrivateMutex should be locked before this is called.
+ *
+ * @param atHandle      the handle of the AT client that is talking
+ *                      to the module.
+ * @param[in] pCmd      a pointer to the string containing the command to
+ *                      be sent to the cellular module.
+ * @param[out] pBuffer  a pointer to size bytes of storage into which
+ *                      the response string will be copied.
+ *                      This pointer cannot be NULL.
+ * @param bufferSize    number of characters in pBuffer.
+ * @return              on success, the number of characters copied into
+ *                      pBuffer NOT including the terminator (as strlen()
+ *                      would return), on failure negative error code.
+ */
+int32_t uCellPrivateGetIdStr(uAtClientHandle_t atHandle,
+                             const char *pCmd, char *pBuffer,
+                             size_t bufferSize);
+
+/** Updates the module related settings for the given instance.
+ *
+ * Note:  gUCellPrivateMutex should be locked before this is called.
+ *
+ * @param pInstance   a pointer to the cellular instance.
+ */
+void uCellPrivateModuleSpecificSetting(uCellPrivateInstance_t *pInstance);
 
 #ifdef __cplusplus
 }

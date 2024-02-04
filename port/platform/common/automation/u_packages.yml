@@ -5,7 +5,7 @@ unity:
 
 nrfconnectsdk:
     type: nrfconnectsdk
-    version: v2.3.0
+    version: v2.5.0
 
 arm_embedded_gcc:
     type: archive
@@ -73,18 +73,18 @@ segger_jlink:
 stm32cubef4:
     type: git
     url: https://github.com/STMicroelectronics/STM32CubeF4.git
-    version: v1.26.1
+    version: v1.28.0
 
 esp_idf:
     type: esp_idf
     windows:
-        version: v5.0.1
+        version: v5.0.3
         url: https://github.com/espressif/esp-idf
     linux:
-        version: v5.0.1
+        version: v5.0.3
         url: https://github.com/espressif/esp-idf
     linux_arm:
-        version: v5.0.1
+        version: v5.0.3
         url: https://github.com/espressif/esp-idf
 
 make:
@@ -173,3 +173,23 @@ platformio:
         check_command: ~/.platformio/penv/bin/pio system info
     windows:
         check_command: ~/.platformio/penv/Scripts/pio system info
+
+libssl-dev:
+    linux:
+        type: apt
+        package_name: libssl-dev
+        check_command: test -e /usr/include/openssl/sha.h
+    linux_arm:
+        type: apt
+        package_name: libssl-dev
+        check_command: test -e /usr/include/openssl/sha.h
+
+libgpiod-dev:
+    linux:
+        type: apt
+        package_name: libgpiod-dev
+        check_command: test -e /usr/include/gpiod.h
+    linux_arm:
+        type: apt
+        package_name: libgpiod-dev
+        check_command: test -e /usr/include/gpiod.h

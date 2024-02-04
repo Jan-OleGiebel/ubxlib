@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,8 @@
 #include "stddef.h"
 #include "stdint.h"
 #include "stdbool.h"
+
+#include "u_compiler.h" // U_ATOMIC_XXX() macros
 
 #include "u_error_common.h"
 
@@ -123,6 +125,10 @@ static I2C_TypeDef *const gpI2cReg[] = {NULL,  // This to avoid having to -1
 /** I2C device data.
  */
 static uPortI2cData_t gI2cData[U_PORT_I2C_MAX_NUM + 1]; // +1 to avoid having to -1
+
+/** Variable to keep track of the number of I2C interfaces open.
+ */
+static volatile int32_t gResourceAllocCount = 0;
 
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
@@ -518,6 +524,7 @@ static void closeI2c(uPortI2cData_t *pInstance)
         }
         // Set the register to NULL to indicate that it is no longer in use
         pInstance->pReg = NULL;
+        U_ATOMIC_DECREMENT(&gResourceAllocCount);
     }
 }
 
@@ -605,7 +612,11 @@ static int32_t openI2c(int32_t i2c, int32_t pinSda, int32_t pinSdc,
                     gpioInitStruct.Pin = (1U << U_PORT_STM32F4_GPIO_PIN(pinSda)) |
                                          (1U << U_PORT_STM32F4_GPIO_PIN(pinSdc));
                     gpioInitStruct.Mode = LL_GPIO_MODE_ALTERNATE;
-                    gpioInitStruct.Speed = LL_GPIO_SPEED_FREQ_VERY_HIGH;
+                    // Note: we used to set the speed to LL_GPIO_SPEED_FREQ_VERY_HIGH
+                    // but that seemed to cause significant comms failures; setting
+                    // the speed to low (up to 8 MHz) is more reliable and perfectly
+                    // sufficient for what is needed here
+                    gpioInitStruct.Speed = GPIO_SPEED_FREQ_LOW;
                     gpioInitStruct.OutputType = LL_GPIO_OUTPUT_OPENDRAIN;
                     gpioInitStruct.Pull = LL_GPIO_PULL_UP;
                     // AF4 from the data sheet for the STM32F437VG
@@ -625,6 +636,7 @@ static int32_t openI2c(int32_t i2c, int32_t pinSda, int32_t pinSdc,
                     gI2cData[i2c].adopted = adopt;
                     // Return the I2C HW block number as the handle
                     handleOrErrorCode = i2c;
+                    U_ATOMIC_INCREMENT(&gResourceAllocCount);
                 } else {
                     if (!adopt) {
                         // Put the bus back to sleep on error
@@ -909,6 +921,12 @@ int32_t uPortI2cControllerSend(int32_t handle, uint16_t address,
     }
 
     return errorCode;
+}
+
+// Get the number of I2C interfaces currently open.
+int32_t uPortI2cResourceAllocCount()
+{
+    return U_ATOMIC_GET(&gResourceAllocCount);
 }
 
 // End of file

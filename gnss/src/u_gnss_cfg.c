@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,8 +38,8 @@
 #include "u_assert.h"
 
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
-#include "u_port_os.h"  // Required by u_gnss_private.h
 
 #include "u_at_client.h"
 
@@ -521,8 +521,8 @@ int32_t uGnssCfgPrivateValSetList(uGnssPrivateInstance_t *pInstance,
             if (pMessage != NULL) {
                 // Assemble the message
                 *pMessage       = 0x01; // Version
-                *(pMessage + 1) = layers;
-                *(pMessage + 2) = transaction;
+                *(pMessage + 1) = (char) layers;
+                *(pMessage + 2) = (char) transaction;
                 *(pMessage + 3) = 0; // Reserved
                 // Add the values
                 packMessage(pList, numValues, pMessage + 4, messageSize - 4);
@@ -564,8 +564,8 @@ int32_t uGnssCfgPrivateValDelList(uGnssPrivateInstance_t *pInstance,
             if (pMessage != NULL) {
                 // Assemble the message
                 *pMessage       = 0x01; // Version
-                *(pMessage + 1) = layers;
-                *(pMessage + 2) = transaction;
+                *(pMessage + 1) = (char) layers;
+                *(pMessage + 2) = (char) transaction;
                 *(pMessage + 3) = 0; // Reserved
                 // Add the key IDs
                 pUintBuffer = (uint32_t *) (pMessage + 4);
@@ -584,6 +584,24 @@ int32_t uGnssCfgPrivateValDelList(uGnssPrivateInstance_t *pInstance,
     }
 
     return errorCode;
+}
+
+// Get the dynamic platform model from the GNSS chip.
+int32_t uGnssCfgPrivateGetDynamic(uGnssPrivateInstance_t *pInstance)
+{
+    int32_t errorCodeOrDynamic = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
+
+    if (pInstance != NULL) {
+        if (U_GNSS_PRIVATE_HAS(pInstance->pModule, U_GNSS_PRIVATE_FEATURE_CFGVALXXX)) {
+            errorCodeOrDynamic = valGetByte(pInstance,
+                                            U_GNSS_CFG_VAL_KEY_ID_NAVSPG_DYNMODEL_E1);
+        } else {
+            // The dynamic platform model is at offset 2
+            errorCodeOrDynamic = getUbxCfgNav5(pInstance, 2);
+        }
+    }
+
+    return errorCodeOrDynamic;
 }
 
 /* ----------------------------------------------------------------
@@ -708,13 +726,7 @@ int32_t uGnssCfgGetDynamic(uDeviceHandle_t gnssHandle)
         errorCodeOrDynamic = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
         pInstance = pUGnssPrivateGetInstance(gnssHandle);
         if (pInstance != NULL) {
-            if (U_GNSS_PRIVATE_HAS(pInstance->pModule, U_GNSS_PRIVATE_FEATURE_CFGVALXXX)) {
-                errorCodeOrDynamic = valGetByte(pInstance,
-                                                U_GNSS_CFG_VAL_KEY_ID_NAVSPG_DYNMODEL_E1);
-            } else {
-                // The dynamic platform model is at offset 2
-                errorCodeOrDynamic = getUbxCfgNav5(pInstance, 2);
-            }
+            errorCodeOrDynamic = uGnssCfgPrivateGetDynamic(pInstance);
         }
 
         U_PORT_MUTEX_UNLOCK(gUGnssPrivateMutex);

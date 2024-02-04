@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,10 +49,12 @@
 #include "u_error_common.h"
 
 #include "u_port.h"
+#include "u_port_os.h"   // Required by u_cell_private.h
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"   // Required by u_cell_private.h
 #include "u_port_uart.h"
+
+#include "u_test_util_resource_check.h"
 
 #include "u_at_client.h"
 
@@ -63,6 +65,7 @@
 #include "u_cell_private.h" // So that we can get at some innards
 #include "u_cell_pwr.h"
 #include "u_cell_cfg.h"
+#include "u_cell_info.h"    // For uCellInfoTime()
 #ifdef U_CELL_TEST_MUX_ALWAYS
 # include "u_cell_mux.h"
 #endif
@@ -100,6 +103,27 @@
  * with AT+UGPRF.
  */
 # define U_CELL_CFG_TEST_GNSS_IP_STR "myserver:1234"
+#endif
+
+#ifndef U_CELL_CFG_TEST_TIME_OFFSET_SECONDS
+/** How far ahead to adjust the time when testing.
+ */
+# define U_CELL_CFG_TEST_TIME_OFFSET_SECONDS 75
+#endif
+
+#ifndef U_CELL_CFG_TEST_TIME_MARGIN_SECONDS
+/** The permitted margin between reading time several times during
+ * testing, in seconds.
+ */
+# define U_CELL_CFG_TEST_TIME_MARGIN_SECONDS 10
+#endif
+
+#ifndef U_CELL_CFG_TEST_FIXED_TIME
+/** A time value to use if the module doesn't have one: should be no
+ * less than #U_CELL_INFO_TEST_MIN_TIME (i.e. 21 July 2021 13:40:36)
+ * plus any timezone offset.
+ */
+# define U_CELL_CFG_TEST_FIXED_TIME (1626874836 + (3600 * 24))
 #endif
 
 /* ----------------------------------------------------------------
@@ -145,13 +169,16 @@ static void testBandMask(uDeviceHandle_t cellHandle,
                          uCellNetRat_t rat,
                          const char *pRatString,
                          uint32_t supportedRatsBitmap,
-                         uCellModuleType_t moduleType)
+                         uCellModuleType_t moduleType,
+                         uint64_t *pBandmask1,
+                         uint64_t *pBandmask2)
 {
     int32_t errorCode;
     uint64_t originalBandMask1 = 0;
     uint64_t originalBandMask2 = 0;
     uint64_t bandMask1;
     uint64_t bandMask2;
+    uint8_t desiredBands[10] = {2, 4, 8, 20};
 
     U_TEST_PRINT_LINE("getting band masks for %s...", pRatString);
     errorCode = uCellCfgGetBandMask(cellHandle, rat,
@@ -175,16 +202,14 @@ static void testBandMask(uDeviceHandle_t cellHandle,
     // Take the existing values and mask off every other bit
     U_TEST_PRINT_LINE("setting band mask for %s to"
                       " 0x%08x%08x %08x%08x...", pRatString,
-                      (uint32_t) (U_CELL_TEST_CFG_ALT_BANDMASK2 >> 32),
-                      (uint32_t) (U_CELL_TEST_CFG_ALT_BANDMASK2),
-                      (uint32_t) (U_CELL_TEST_CFG_ALT_BANDMASK1 >> 32),
-                      (uint32_t) (U_CELL_TEST_CFG_ALT_BANDMASK1));
+                      (uint32_t) (*pBandmask2 >> 32),
+                      (uint32_t) (*pBandmask2),
+                      (uint32_t) (*pBandmask1 >> 32),
+                      (uint32_t) (*pBandmask1));
 
     U_PORT_TEST_ASSERT(!uCellPwrRebootIsRequired(cellHandle));
 
-    errorCode = uCellCfgSetBandMask(cellHandle, rat,
-                                    U_CELL_TEST_CFG_ALT_BANDMASK1,
-                                    U_CELL_TEST_CFG_ALT_BANDMASK2);
+    errorCode = uCellCfgSetBandMask(cellHandle, rat, *pBandmask1, *pBandmask2);
     if (supportedRatsBitmap & (1UL << (int32_t) rat)) {
         U_PORT_TEST_ASSERT(errorCode == 0);
         U_PORT_TEST_ASSERT(uCellPwrRebootIsRequired(cellHandle));
@@ -204,8 +229,45 @@ static void testBandMask(uDeviceHandle_t cellHandle,
             U_TEST_PRINT_LINE("new %s band mask is 0x%08x%08x %08x%08x...",
                               pRatString, (uint32_t) (bandMask2 >> 32), (uint32_t) bandMask2,
                               (uint32_t) (bandMask1 >> 32), (uint32_t) bandMask1);
-            U_PORT_TEST_ASSERT(bandMask1 == U_CELL_TEST_CFG_ALT_BANDMASK1);
-            U_PORT_TEST_ASSERT(bandMask2 == U_CELL_TEST_CFG_ALT_BANDMASK2);
+            U_PORT_TEST_ASSERT(bandMask1 == *pBandmask1);
+            U_PORT_TEST_ASSERT(bandMask2 == *pBandmask2);
+
+            //Test case 1: The all fine condition, with pre-defined bandmask for testing
+            U_PORT_TEST_ASSERT(uCellCfgSetBands(cellHandle, rat, sizeof(desiredBands) / sizeof(desiredBands[0]),
+                                                desiredBands) == 0);
+
+            //Test case 2: The all fine condition, added the band 66 for bandmask2
+            if (rat == U_CELL_NET_RAT_CATM1) {
+#ifndef U_CELL_CFG_SARA_R5_00B
+                memset(desiredBands, 0, sizeof(desiredBands));
+                desiredBands[0] = 2;
+                desiredBands[1] = 4;
+                desiredBands[2] = 8;
+                desiredBands[4] = 20;
+                desiredBands[5] = 66;
+                U_PORT_TEST_ASSERT(uCellCfgSetBands(cellHandle, rat, 10, desiredBands) == 0);
+#endif
+            }
+            //Test case 3: The null pointer case
+            uint8_t *pTmp = NULL;
+            U_PORT_TEST_ASSERT(uCellCfgSetBands(cellHandle, rat, 6, pTmp) < 0);
+
+            //Test case 4: The invalid band case
+            memset(desiredBands, 0, sizeof(desiredBands));
+            desiredBands[0] = 1;
+            desiredBands[2] = 130;
+            desiredBands[6] = 2;
+            U_PORT_TEST_ASSERT(uCellCfgSetBands(cellHandle, rat, 6, desiredBands) < 0);
+
+            //Test case 5: Disable all bands case (Except for lena R8)
+
+            //Some cellular modules allow to disable the bands and some do not, e.g. SARA_R5 don't
+            //allow to write zero band but LARA R6 allows it.
+            if (moduleType == U_CELL_MODULE_TYPE_LARA_R6) {
+                memset(desiredBands, 0, sizeof(desiredBands));
+                U_PORT_TEST_ASSERT(uCellCfgSetBands(cellHandle, rat,
+                                                    sizeof(desiredBands) / sizeof(desiredBands[0]), desiredBands) == 0);
+            }
             U_TEST_PRINT_LINE("putting original band masks back...");
             U_PORT_TEST_ASSERT(uCellCfgSetBandMask(cellHandle, rat,
                                                    originalBandMask1,
@@ -249,16 +311,18 @@ static void greetingCalback(uDeviceHandle_t cellHandle, void *pParameter)
 U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgBandMask")
 {
     const uCellPrivateModule_t *pModule;
-    int32_t heapUsed;
+    int32_t resourceCount;
+    uint64_t bandMask1 = U_CELL_TEST_CFG_ALT_BANDMASK1;
+    uint64_t bandMask2 = U_CELL_TEST_CFG_ALT_BANDMASK2;
 
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
-    U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
+    U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CELL_MODULE_TYPE_ANY,
                                                 &gHandles, true) == 0);
 
     // Get the private module data as we need it for testing
@@ -269,26 +333,37 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgBandMask")
 
     // Test cat-M1
     testBandMask(gHandles.cellHandle, U_CELL_NET_RAT_CATM1, "cat-M1",
-                 pModule->supportedRatsBitmap, pModule->moduleType);
+                 pModule->supportedRatsBitmap, pModule->moduleType,
+                 &bandMask1, &bandMask2);
 
     // Test NB1
     testBandMask(gHandles.cellHandle, U_CELL_NET_RAT_NB1, "NB1",
-                 pModule->supportedRatsBitmap, pModule->moduleType);
+                 pModule->supportedRatsBitmap, pModule->moduleType,
+                 &bandMask1, &bandMask2);
 
     // Test LTE
     testBandMask(gHandles.cellHandle, U_CELL_NET_RAT_LTE, "LTE",
-                 pModule->supportedRatsBitmap, pModule->moduleType);
+                 pModule->supportedRatsBitmap, pModule->moduleType,
+                 &bandMask1, &bandMask2);
+
+    if (pModule->moduleType == U_CELL_MODULE_TYPE_LENA_R8) {
+        // For LENA-R8, check that we can set an empty band-mask, which means "all bands"
+        bandMask1 = 0;
+        bandMask2 = 0;
+        testBandMask(gHandles.cellHandle, U_CELL_NET_RAT_LTE, "LTE",
+                     pModule->supportedRatsBitmap, pModule->moduleType,
+                     &bandMask1, &bandMask2);
+    }
 
     // Do the standard postamble, leaving the module on for the next
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test getting/setting RAT.
@@ -299,13 +374,13 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgGetSetRat")
     const uCellPrivateModule_t *pModule;
     size_t numSupportedRats = 0;
     uCellNetRat_t supportedRats[U_CELL_NET_RAT_MAX_NUM];
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -366,12 +441,11 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgGetSetRat")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test getting/setting RAT at a rank.
@@ -392,7 +466,7 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgSetGetRatRank")
     int32_t repeats;
     int32_t y;
     int32_t readRank;
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
@@ -403,8 +477,8 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgSetGetRatRank")
     // out of our sums.
     rand();
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -613,12 +687,11 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgSetGetRatRank")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test getting/setting MNO profile.
@@ -629,13 +702,13 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgGetSetMnoProfile")
     const uCellPrivateModule_t *pModule;
     int32_t readMnoProfile;
     int32_t mnoProfile;
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -715,12 +788,11 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgGetSetMnoProfile")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test UDCONF.
@@ -731,13 +803,13 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgUdconf")
     int32_t udconfOriginal;
     int32_t x;
     int32_t setUdconf = 0;
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -768,12 +840,11 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgUdconf")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test setting auto-bauding off and on.
@@ -793,13 +864,13 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgAutoBaud")
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
     int32_t x;
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -839,12 +910,11 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgAutoBaud")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test greeting message.
@@ -856,14 +926,14 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgGreeting")
     char buffer[64];
     int32_t x;
     int32_t y;
-    int32_t heapUsed;
+    int32_t resourceCount;
     int32_t param = 0;
 
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -960,12 +1030,11 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgGreeting")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test setting GNSS profile.
@@ -976,13 +1045,13 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgGnssProfile")
     char *pServerNameOriginal;
     char *pServerName;
     int32_t x;
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -993,6 +1062,7 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgGnssProfile")
     // on we will read back during testing
     pServerNameOriginal = (char *) pUPortMalloc(U_CELL_CFG_GNSS_SERVER_NAME_MAX_LEN_BYTES);
     U_PORT_TEST_ASSERT(pServerNameOriginal != NULL);
+    memset(pServerNameOriginal, 0, U_CELL_CFG_GNSS_SERVER_NAME_MAX_LEN_BYTES);
     pServerName = (char *) pUPortMalloc(U_CELL_CFG_GNSS_SERVER_NAME_MAX_LEN_BYTES);
     U_PORT_TEST_ASSERT(pServerName != NULL);
     memset(pServerName, 0xFF, U_CELL_CFG_GNSS_SERVER_NAME_MAX_LEN_BYTES);
@@ -1032,12 +1102,92 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgGnssProfile")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
+}
+
+/** Test setting time.
+ */
+U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgTime")
+{
+    uDeviceHandle_t cellHandle;
+    int64_t timeLocal;
+    int32_t timeZoneOffsetOriginalSeconds;
+    int32_t timeZoneOffsetSeconds;
+    int64_t x;
+    int32_t resourceCount;
+
+    // In case a previous test failed
+    uCellTestPrivateCleanup(&gHandles);
+
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
+
+    // Do the standard preamble
+    U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
+                                                &gHandles, true) == 0);
+    cellHandle = gHandles.cellHandle;
+
+#ifndef U_CELL_CFG_TEST_USE_FIXED_TIME_SECONDS
+    // Get the time
+    timeLocal = uCellInfoGetTime(cellHandle, &timeZoneOffsetOriginalSeconds);
+    U_TEST_PRINT_LINE("local time is %d, timezone offset %d seconds.",
+                      (int32_t) timeLocal, timeZoneOffsetOriginalSeconds);
+#else
+    timeLocal = U_CELL_CFG_TEST_FIXED_TIME;
+    timeZoneOffsetOriginalSeconds = 3600;
+    U_TEST_PRINT_LINE("using fixed local time %d, timezone offset %d seconds.",
+                      (int32_t) timeLocal, timeZoneOffsetOriginalSeconds);
+#endif
+    // Set the time forward
+    U_TEST_PRINT_LINE("setting time forward %d second(s)...", U_CELL_CFG_TEST_TIME_OFFSET_SECONDS);
+    U_PORT_TEST_ASSERT(uCellCfgSetTime(cellHandle, timeLocal + U_CELL_CFG_TEST_TIME_OFFSET_SECONDS,
+                                       timeZoneOffsetOriginalSeconds) == 0);
+    x = uCellInfoGetTime(cellHandle, &timeZoneOffsetSeconds);
+    U_TEST_PRINT_LINE("local time is now %d, timezone offset %d seconds.",
+                      (int32_t) x, timeZoneOffsetSeconds);
+    U_PORT_TEST_ASSERT(x - timeLocal >= U_CELL_CFG_TEST_TIME_OFFSET_SECONDS);
+    U_PORT_TEST_ASSERT((x - timeLocal) - U_CELL_CFG_TEST_TIME_OFFSET_SECONDS <
+                       U_CELL_CFG_TEST_TIME_MARGIN_SECONDS);
+    // Set the timezone forward
+    U_TEST_PRINT_LINE("setting timezone forward a quarter of an hour...");
+    U_PORT_TEST_ASSERT(uCellCfgSetTime(cellHandle, x, timeZoneOffsetOriginalSeconds + (15 * 60)) == 0);
+    x = uCellInfoGetTime(cellHandle, &timeZoneOffsetSeconds);
+    U_TEST_PRINT_LINE("local time is now %d, timezone offset is now %d seconds.",
+                      (int32_t) x, timeZoneOffsetSeconds);
+    U_PORT_TEST_ASSERT(timeZoneOffsetSeconds - timeZoneOffsetOriginalSeconds == 15 * 60);
+    U_PORT_TEST_ASSERT(x - timeLocal >= U_CELL_CFG_TEST_TIME_OFFSET_SECONDS);
+    U_PORT_TEST_ASSERT((x - timeLocal) - U_CELL_CFG_TEST_TIME_OFFSET_SECONDS <
+                       U_CELL_CFG_TEST_TIME_MARGIN_SECONDS);
+    // Set the timezone backward
+    U_TEST_PRINT_LINE("setting timezone to minus what it was...");
+    U_PORT_TEST_ASSERT(uCellCfgSetTime(cellHandle, x, -timeZoneOffsetOriginalSeconds) == 0);
+    x = uCellInfoGetTime(cellHandle, &timeZoneOffsetSeconds);
+    U_TEST_PRINT_LINE("local time is now %d, timezone offset is now %d seconds.",
+                      (int32_t) x, timeZoneOffsetSeconds);
+    U_PORT_TEST_ASSERT(timeZoneOffsetSeconds + timeZoneOffsetOriginalSeconds == 0);
+    U_PORT_TEST_ASSERT(x - timeLocal >= U_CELL_CFG_TEST_TIME_OFFSET_SECONDS);
+    U_PORT_TEST_ASSERT((x - timeLocal) - U_CELL_CFG_TEST_TIME_OFFSET_SECONDS <
+                       U_CELL_CFG_TEST_TIME_MARGIN_SECONDS);
+    // Put everything back as it was
+    U_TEST_PRINT_LINE("setting time back %d second(s) again and putting the timezone offset back to %d seconds.",
+                      U_CELL_CFG_TEST_TIME_OFFSET_SECONDS, timeZoneOffsetOriginalSeconds);
+    x = uCellInfoGetTime(cellHandle, &timeZoneOffsetSeconds);
+    U_PORT_TEST_ASSERT(uCellCfgSetTime(cellHandle, x - U_CELL_CFG_TEST_TIME_OFFSET_SECONDS,
+                                       timeZoneOffsetOriginalSeconds) == 0);
+
+    // Do the standard postamble, leaving the module on for the next
+    // test to speed things up
+    uCellTestPrivatePostamble(&gHandles, false);
+
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Clean-up to be run at the end of this round of tests, just
@@ -1046,8 +1196,6 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgGnssProfile")
  */
 U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgCleanUp")
 {
-    int32_t x;
-
     if ((gHandles.cellHandle != NULL) && (gGnssProfileBitMapOriginal >= 0)) {
         // Make sure that the value that ends up in the GNSS profile
         // does NOT include a server name as that causes confusion
@@ -1058,22 +1206,9 @@ U_PORT_TEST_FUNCTION("[cellCfg]", "cellCfgCleanUp")
     }
 
     uCellTestPrivateCleanup(&gHandles);
-
-    x = uPortTaskStackMinFree(NULL);
-    if (x != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d"
-                          " byte(s) free at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-    x = uPortGetHeapMinFree();
-    if (x >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free"
-                          " at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 #endif // #ifdef U_CFG_TEST_CELL_MODULE_TYPE

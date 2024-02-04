@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@
 
 #include "u_error_common.h"
 
-#include "u_cfg_os_platform_specific.h"  // For #define U_CFG_OS_CLIB_LEAKS
+#include "u_cfg_os_platform_specific.h"
 
 #include "u_at_client.h"
 
@@ -182,7 +182,7 @@ static void wifiConnectionCallback(uDeviceHandle_t devHandle,
         }
     }
 
-#if U_CFG_ENABLE_LOGGING && !U_CFG_OS_CLIB_LEAKS
+#if U_CFG_ENABLE_LOGGING
     if (status == U_WIFI_CON_STATUS_CONNECTED) {
         uPortLog(LOG_TAG "Wifi connected connId: %d, bssid: %s, channel: %d\n",
                  connId,
@@ -220,14 +220,12 @@ static void wifiNetworkStatusCallback(uDeviceHandle_t devHandle,
     (void)pCallbackParameter;
     uPortQueueHandle_t queueHandle = getQueueHandle(devHandle);
 
-#if !U_CFG_OS_CLIB_LEAKS
     uPortLog(LOG_TAG "Network status IPv4 %s, IPv6 %s\n",
              ((statusMask & U_WIFI_STATUS_MASK_IPV4_UP) > 0) ? "up" : "down",
              ((statusMask & U_WIFI_STATUS_MASK_IPV6_UP) > 0) ? "up" : "down");
     if (queueHandle == NULL) {
         uPortLog(LOG_TAG "[no-one to tell].\n");
     }
-#endif
 
     uStatusMessage_t msg = {
         .msgType = U_MSG_NET_STATUS,
@@ -315,7 +313,8 @@ static inline int32_t statusQueueWaitForNetworkUp(const uPortQueueHandle_t queue
         // If one of the network protocol is up we
         // return without failure since this could
         // be only a missconfiguration
-        uPortLog("Warning: A network protocol failed");
+        uPortLog(LOG_TAG "Warning, a network protocol failed (0x%02x v 0x%02x)\n",
+                 lastNetStatusMask, desiredNetStatusMask);
         return (int32_t) U_ERROR_COMMON_SUCCESS;
     }
 
@@ -349,6 +348,8 @@ int32_t uNetworkPrivateChangeStateWifi(uDeviceHandle_t devHandle,
     if ((pCfg == NULL) || (pCfg->version != 0) || (pCfg->type != U_NETWORK_TYPE_WIFI)) {
         return (int32_t)U_ERROR_COMMON_INVALID_PARAMETER;
     }
+    bool isSta = (pCfg->mode == U_WIFI_MODE_STA) || (pCfg->mode == U_WIFI_MODE_STA_AP);
+    bool isAp = (pCfg->mode == U_WIFI_MODE_AP) || (pCfg->mode == U_WIFI_MODE_STA_AP);
 
     // Callback message queue, may or may not be initiated before
     uPortQueueHandle_t queueHandle = getQueueHandle(devHandle);
@@ -374,13 +375,25 @@ int32_t uNetworkPrivateChangeStateWifi(uDeviceHandle_t devHandle,
             // Clear status queue since we are only interested in fresh messages
             statusQueueClear(queueHandle);
 
-            errorCode = uWifiStationConnect(devHandle,
-                                            pCfg->pSsid,
-                                            (uWifiAuth_t)pCfg->authentication,
-                                            pCfg->pPassPhrase);
+            if (isSta) {
+                errorCode = uWifiStationConnect(devHandle,
+                                                pCfg->pSsid,
+                                                (uWifiAuth_t)pCfg->authentication,
+                                                pCfg->pPassPhrase);
+            }
+            if (errorCode == 0 && isAp) {
+                errorCode = uWifiAccessPointStart(devHandle,
+                                                  pCfg->pApSssid,
+                                                  (uWifiAuth_t)pCfg->apAuthentication,
+                                                  pCfg->pApPassPhrase,
+                                                  pCfg->pApIpAddress);
+            }
+
             if (errorCode == 0) {
                 // Wait until the network layer is up before return
-                errorCode = statusQueueWaitForWifiConnected(queueHandle, 20);
+                if (isSta) {
+                    errorCode = statusQueueWaitForWifiConnected(queueHandle, 20);
+                }
                 if (errorCode == 0) {
                     errorCode = statusQueueWaitForNetworkUp(queueHandle,
                                                             U_NETWORK_PRIVATE_WIFI_NETWORK_TIMEOUT_SEC);
@@ -420,12 +433,16 @@ int32_t uNetworkPrivateChangeStateWifi(uDeviceHandle_t devHandle,
             errorCode = uWifiSetConnectionStatusCallback(devHandle,
                                                          wifiConnectionCallback,
                                                          devHandle);
-            if (errorCode == 0) {
+            if (errorCode == 0 && isSta) {
                 errorCode = uWifiStationDisconnect(devHandle);
-                uPortLog("uWifiStationDisconnect: %d\n", errorCode);
+                uPortLog(LOG_TAG "uWifiStationDisconnect: %d\n", errorCode);
+            }
+            if (errorCode == 0 && isAp) {
+                errorCode = uWifiAccessPointStop(devHandle);
+                uPortLog(LOG_TAG "uWifiAccessPointStop: %d\n", errorCode);
             }
 
-            if (errorCode == 0) {
+            if (errorCode == 0 && isSta) {
                 // Wait until the wifi have been disabled before return
                 errorCode = statusQueueWaitForWifiDisabled(queueHandle, 5);
             }

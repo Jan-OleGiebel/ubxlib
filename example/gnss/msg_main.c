@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -66,13 +66,18 @@
  * VARIABLES
  * -------------------------------------------------------------- */
 
+// ZEPHYR USERS may prefer to set the device and network
+// configuration from their device tree, rather than in this C
+// code: see /port/platform/zephyr/README.md for instructions on
+// how to do that.
+
 // GNSS configuration.
 // Set U_CFG_TEST_GNSS_MODULE_TYPE to your module type,
 // chosen from the values in gnss/api/u_gnss_module_type.h
 //
 // Note that the pin numbers are those of the MCU: if you
 // are using an MCU inside a u-blox module the IO pin numbering
-// for the module is likely different that from the MCU: check
+// for the module is likely different to that of the MCU: check
 // the data sheet for the module to determine the mapping.
 
 #if ((U_CFG_APP_GNSS_UART >= 0) || (U_CFG_APP_GNSS_I2C >= 0) || (U_CFG_APP_GNSS_SPI >= 0))
@@ -154,11 +159,17 @@ static const uDeviceCfg_t gDeviceCfg = {
     .transportCfg = {
         .cfgUart = {
             .uart = U_CFG_APP_GNSS_UART,
-            .baudRate = U_GNSS_UART_BAUD_RATE,
+            .baudRate = U_GNSS_UART_BAUD_RATE, /* Use 0 to try all possible baud rates
+                                                  and find the correct one. */
             .pinTxd = U_CFG_APP_PIN_GNSS_TXD,
             .pinRxd = U_CFG_APP_PIN_GNSS_RXD,
             .pinCts = U_CFG_APP_PIN_GNSS_CTS,
-            .pinRts = U_CFG_APP_PIN_GNSS_RTS
+            .pinRts = U_CFG_APP_PIN_GNSS_RTS,
+#ifdef U_CFG_APP_UART_PREFIX
+            .pPrefix = U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX) // Relevant for Linux only
+#else
+            .pPrefix = NULL
+#endif
         },
     },
 #  endif
@@ -204,7 +215,7 @@ static char latLongToBits(int32_t thingX1e7,
     return prefix;
 }
 
-// Print out the position contained in a UBX-NAV_PVT message
+// Print out the position contained in a UBX-NAV-PVT message
 static void printPosition(const char *pBuffer, size_t length)
 {
     char prefix[2] = {0};
@@ -213,7 +224,9 @@ static void printPosition(const char *pBuffer, size_t length)
     int32_t longitudeX1e7;
     int32_t latitudeX1e7;
 
-    if ((length >= 32) && (*(pBuffer + 21) & 0x01)) {
+    // We have the complete raw message so need to move past the header
+    pBuffer += U_UBX_PROTOCOL_HEADER_LENGTH_BYTES;
+    if ((length >= U_UBX_PROTOCOL_HEADER_LENGTH_BYTES + 32) && (*(pBuffer + 21) & 0x01)) {
         longitudeX1e7 =  uUbxProtocolUint32Decode(pBuffer + 24);
         latitudeX1e7 = uUbxProtocolUint32Decode(pBuffer + 28);
         prefix[0] = latLongToBits(longitudeX1e7, &(whole[0]), &(fraction[0]));
@@ -237,7 +250,7 @@ static void callback(uDeviceHandle_t devHandle, const uGnssMessageId_t *pMessage
         length = uGnssMsgReceiveCallbackRead(devHandle, pBuffer, errorCodeOrLength);
         if (length >= 0) {
             gMessageCount++;
-#if !U_CFG_OS_CLIB_LEAKS && !defined(U_CFG_TEST_USING_NRF5SDK) // NRF52 goes a bit crazy if you print here
+#ifndef U_CFG_TEST_USING_NRF5SDK // NRF52 goes a bit crazy if you print here
             uPortLog("%.*s", length, pBuffer);
         } else {
             uPortLog("Empty or bad message received.\n");

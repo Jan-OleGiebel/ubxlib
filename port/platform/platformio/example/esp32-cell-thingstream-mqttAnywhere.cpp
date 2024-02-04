@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -58,7 +58,8 @@ static const uDeviceCfg_t gDeviceCfg = {
             .pinTxd = -1,
             .pinRxd = -1,
             .pinCts = -1,
-            .pinRts = -1
+            .pinRts = -1,
+            .pPrefix = NULL // Relevant for Linux only
         },
     },
 };
@@ -183,7 +184,11 @@ void loop()
         } else {
             printf("* Failed to bring up the network: %d\n", errorCode);
         }
-        uDeviceClose(deviceHandle, true);
+        // Close the device
+        if (uDeviceClose(deviceHandle, true) != 0) {
+            // Device has not responded to power off request, just release resources
+            uDeviceClose(deviceHandle, false);
+        }
     } else {
         printf("* Failed to initiate the module: %d\n", errorCode);
     }

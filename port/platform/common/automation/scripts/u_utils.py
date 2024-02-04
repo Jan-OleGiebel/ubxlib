@@ -6,6 +6,7 @@ import queue                    # For PrintThread and exe_run
 from time import sleep, time    # For lock timeout, exe_run timeout and logging
 import threading                # For PrintThread
 import sys
+import re
 import os                       # For ChangeDir, has_admin
 import stat                     # To help deltree out
 from telnetlib import Telnet    # For talking to JLink server
@@ -682,6 +683,16 @@ class ExeRun():
                 else:
                     sig = signal.CTRL_BREAK_EVENT
                 self._process.send_signal(sig)
+                # Sometimes a process can spew stuff after it
+                # has been asked to stop (e.g. a Valgrind report)
+                # and it won't terminate until that has been read
+                line = self._process.stdout.readline().decode(). \
+                       encode("ascii", errors="replace").decode()
+                while (self._process.poll() is None) and line :
+                    line = line.rstrip()
+                    self._logger.info(line)
+                    line = self._process.stdout.readline().decode(). \
+                           encode("ascii", errors="replace").decode()
                 sleep(1)
                 retry -= 1
             return_value = self._process.poll()
@@ -820,37 +831,47 @@ def kmtronic_reset(ip_address, hex_bitmap, logger: Logger=DEFAULT_LOGGER):
         logger.error(f"unable to connect to KMTronic box at {ip_address}.")
 
 # Look for a single line anywhere in message
-# beginning with "test: ".  This must be followed by
-# "x.y.z a.b.c m.n.o" (i.e. instance IDs space separated)
-# and then an optional "blah" filter string, or just "*"
-# and an optional "blah" filter string or "None".
-# Valid examples are:
+# beginning with "test: ".  This should be followed by
+# "x.y.z a.b.c m.n.o" (i.e. instance IDs, space or comma
+# separated), where "*" may be used as a wildcard, and
+# then an optional "blah" test filter, or "None".
+# The test filter may contain multiple elements separated
+# by a "." (think of it as "or").  Valid examples are:
 #
 # test: 1
 # test: 1 3 7
-# test: 1.0.3 3 7.0
+# test: 1.*, 3 7.0
 # test: 1 2 example
-# test: 1.1 8 portInit
+# test: 1* 8 portInit.example
 # test: *
 # test: * port
+# test: port
 # test: none
 #
-# Filter strings must NOT begin with a digit.
-# There cannot be more than one * or a * with any other instance.
-# There can only be one filter string.
-# Only whitespace is expected after this on the line.
-# Anything else is ignored.
-# Populates instances with the "0 4.5 13.5.1" bit as instance
-# entries [[0], [4, 5], [13, 5, 1]] and returns the filter
-# string, if any.
-def commit_message_parse(message, instances, printer=None, prompt=None):
+# Parsing rules:
+# - An instance ID begins with a digit or a *.
+# - A test filter string begins with a non-numeric alpha.
+# - Only " " and "," may be used as separators.
+# - If there is more than one test filter string, this code
+#   will concatenate them with ".".
+# - "none" and "test" are not case sensitive.
+# - "none" must appear on its own.
+# - If no instances are listed this means all instances.
+#
+# This function populates instances with the "0 4.5 13.5.1"
+# part as instance entries [[0], [4, 5], [13, 5, 1]] and
+# returns the test filter string, if any.
+def commit_message_parse(message, instances_all, instances_out, printer=None, prompt=None):
     '''Find stuff in a commit message'''
-    instances_all = False
     instances_local = []
     filter_string_local = None
     found = False
 
     if message:
+        # Create a list of instances as text that we can regex match on
+        instances_all_text = []
+        for instance in instances_all:
+            instances_all_text.append(get_instance_text(instance))
         # Search through message for a line beginning
         # with "test:"
         if printer:
@@ -861,112 +882,80 @@ def commit_message_parse(message, instances, printer=None, prompt=None):
                 printer.string(f"{prompt}text line {idx1 + 1}: \"{line}\"")
             if line.lower().startswith("test:"):
                 found = True
-                instances_all = False
+                instances_local = []
+                filter_string_local = None
                 # Pick through what follows
-                parts = line[5:].split()
+                parts = re.split("\s+|,", line[5:])
                 for part in parts:
-                    if instances_all and (part[0].isdigit() or part == "*" or part.lower() == "none"):
-                        # If we've had a "*" and this is another one
-                        # or it begins with a digit then this is
-                        # obviously not a "test:" line,
-                        # leave the loop and try again.
-                        instances_local = []
-                        filter_string_local = None
-                        if printer:
-                            printer.string(f"{prompt}...badly formed test directive, ignoring.")
-                            found = False
-                        break
-                    if filter_string_local:
-                        # If we've had a filter string then nothing
-                        # must follow so this is not a "test:" line,
-                        # leave the loop and try again.
-                        instances_local = []
-                        filter_string_local = None
-                        if printer:
-                            printer.string(f"{prompt}...extraneous characters after test directive," \
-                                           " ignoring.")
-                            found = False
-                        break
-                    if part[0].isdigit():
-                        # If this part begins with a digit it could
-                        # be an instance containing numbers
-                        instance = []
-                        bad = False
-                        for item in part.split("."):
-                            try:
-                                instance.append(int(item))
-                            except ValueError:
-                                # Some rubbish, not a test line so
-                                # leave the loop and try the next
-                                # line
-                                bad = True
-                                break
-                        if bad:
-                            instances_local = []
-                            filter_string_local = None
-                            if printer:
-                                printer.string(f"{prompt}...badly formed test directive, ignoring.")
+                    if part:
+                        if part[:4].lower() == "none" and \
+                           (len(part) == 4 or (len(part) == 5 and part[4] == ".")):
+                            # The above to allow a full stop on the end of "none"
+                            if instances_local or filter_string_local:
+                                # If we've already had any instances or
+                                # a test string filter this is obviously
+                                # not a test line, leave the loop and
+                                # try again
+                                found = False
+                            # Leave the loop in any case
+                            break
+                        if part[0].isdigit() or part[0] == "*":
+                            # Could be an instance: create a regex from
+                            # it that we can apply to the instance text list:
+                            # "." is a literal match, "*" becomes regex
+                            # match-any-character
+                            pattern = part.replace(".", "\\.").replace("*", ".*") + "$"
+                            for idx2, instance_text in enumerate(instances_all_text):
+                                match = re.match(pattern, instance_text)
+                                if match:
+                                    # Add the matching instance to the list
+                                    instances_local.append(instances_all[idx2])
+                        elif part[0].isalpha() or part[0] == ".":
+                            # Must be a test filter string, add it to what
+                            # we might already have
+                            if part[0] == ".":
+                                # Remove any dot off the start
+                                part = part[1:]
+                            if part[-1] == ".":
+                                # Remove any dot off the end
+                                part = part[:-1]
+                            if filter_string_local:
+                                filter_string_local += "." + part
+                            else:
+                                filter_string_local = part
+                        else:
+                            # Must have found some rubbish, leave
+                            # the loop and try the next line
                             found = False
                             break
-                        if instance:
-                            instances_local.append(instance[:])
-                    elif part == "*":
-                        if instances_local:
-                            # If we've already had any instances
-                            # this is obviously not a test line,
-                            # leave the loop and try again
-                            instances_local = []
-                            filter_string_local = None
-                            if printer:
-                                printer.string(f"{prompt}...badly formed test directive, ignoring.")
-                                found = False
-                            break
-                        # If we haven't had any instances and
-                        # this is a * then it means "all"
-                        instances_local.append(part)
-                        instances_all = True
-                    elif part.lower() == "none":
-                        if instances_local:
-                            # If we've already had any instances
-                            # this is obviously not a test line,
-                            # leave the loop and try again
-                            if printer:
-                                printer.string(f"{prompt}...badly formed test directive, ignoring.")
-                                found = False
-                        instances_local = []
-                        filter_string_local = None
-                        break
-                    elif instances_local and not part == "*":
-                        # If we've had an instance and this
-                        # is not a "*" then this must be a
-                        # filter string
-                        filter_string_local = part
-                    else:
-                        # Found some rubbish, not a "test:"
-                        # line after all, leave the loop
-                        # and try the next line
-                        instances_local = []
-                        filter_string_local = None
-                        if printer:
-                            printer.string(f"{prompt}...badly formed test directive, ignoring.")
-                            found = False
-                        break
                 if found:
-                    text = "found test directive with"
-                    if instances_local:
-                        text += " instance(s)" + get_instances_text(instances_local)
-                        if filter_string_local:
-                            text += " and filter \"" + filter_string_local + "\""
-                    else:
-                        text += " instances \"None\""
-                    if printer:
-                        printer.string(f"{prompt}{text}.")
+                    # If we have a test filter string but no instances
+                    # that means all instances
+                    if filter_string_local and not instances_local:
+                        instances_local.extend(instances_all[:])
+                    # Exit the loop, we've found what we were looking for
                     break
+                # Keep looking
                 if printer:
-                    printer.string(f"{prompt}no test directive found")
-
-    if found and instances_local:
-        instances.extend(instances_local[:])
+                    printer.string(f"{prompt}...badly formed test directive, ignoring.")
+        if found:
+            #  Create a de-duplicated output list
+            for instance in instances_local:
+                if instance not in instances_out:
+                    instances_out.append(instance[:])
+            instances_out.sort()
+            text = "found test directive that results in"
+            if instances_local:
+                text += " instance(s)" + get_instances_text(instances_local)
+                if filter_string_local:
+                    text += " and filter \"" + filter_string_local + "\""
+            else:
+                text += " instances \"None\""
+            if printer:
+                printer.string(f"{prompt}{text}.")
+        else:
+            if printer:
+                printer.string(f"{prompt}no test directive found")
 
     return found, filter_string_local
 
@@ -1004,40 +993,55 @@ def merge_filter(defines, filter_string):
 
     return defines_returned
 
-def device_redirect_thread(device_a, device_b, baud_rate, terminateQueue, logger):
-    '''Redirect thread, started by device_redirect_start()'''
-    terminated = False
+def device_redirect_str(device, as_pty, baud_rate):
+    '''Create the device redirect string for use with socat'''
     baud_rate_str = ""
 
     if baud_rate:
         baud_rate_str = ",b" + str(baud_rate)
 
-    call_list = ["socat", device_a + ",echo=0,raw" + baud_rate_str, \
-                 device_b + ",echo=0,raw" + baud_rate_str]
+    if as_pty:
+        # If we're opening as a PTY then the device we have been
+        # given will be a symlink, e.g. /tmp/ttyv0
+        device_str = "pty,link=" + device + ",echo=0,raw" + baud_rate_str
+    else:
+        device_str = device + ",echo=0,raw" + baud_rate_str
+
+    return device_str
+
+def device_redirect_thread(device_a, as_pty_a, device_b, as_pty_b, baud_rate,
+                           terminateQueue, logger):
+    '''Redirect thread, started by device_redirect_start()'''
+    terminated = False
+
+    call_list = ["socat", device_redirect_str(device_a, as_pty_a, baud_rate),
+                 device_redirect_str(device_b, as_pty_b, baud_rate)]
     with ExeRun(call_list, logger) as process:
         while not terminated:
             try:
                 terminateQueue.get(timeout=1)
                 terminated = True
             except queue.Empty:
-                if logger:
-                    line = process.stdout.readline().decode().encode("ascii", errors="replace").decode()
-                    while line:
-                        line = line.rstrip()
-                        logger.error(line)
-                        line = process.stdout.readline().decode().encode("ascii", errors="replace").decode()
+                # Note: used to log the process output in here but a
+                # readline() will block, meaning that termination
+                # doesn't work; rather than faff around with N million
+                # different workarounds for this behaviour off the
+                # internet, we don't log the output of socat (which
+                # shouldn't be of interest anyway)
                 if process.poll():
                     # The process has terminated all by itself
                     terminated = True
 
-def device_redirect_start(device_a, device_b, baud_rate, logger: Logger=DEFAULT_LOGGER):
+def device_redirect_start(device_a, as_pty_a, device_b, as_pty_b, baud_rate,
+                          logger: Logger=DEFAULT_LOGGER):
     '''Start a thread that redirects device_a to device_b, Linux only'''
     terminateQueue = None
 
     if is_linux():
         terminateQueue = queue.Queue()
         handle = threading.Thread(target=device_redirect_thread,
-                                  args=(device_a, device_b, baud_rate, terminateQueue, logger))
+                                  args=(device_a, as_pty_a, device_b, as_pty_b, baud_rate,
+                                        terminateQueue, logger))
         handle.start()
         # Pause to let socat print the opening debug; useful in case
         # it gets "permission denied" or some such back

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -69,7 +69,7 @@ extern "C" {
  */
 typedef struct {
     int32_t networkType; /**< the type for this network. */
-    const void *pCfg; /**< constant network configuration provided by application. */
+    void *pCfg; /**< network configuration provided by application. */
     void *pContext; /**< optional context data for this network interface. */
     void *pStatusCallbackData; /**< optional status callback for this network interface. */
 } uDeviceNetworkData_t;
@@ -81,8 +81,11 @@ typedef struct {
 typedef struct {
     uint32_t magic;             /**< magic number for detecting a stale uDeviceInstance_t. */
     uDeviceType_t deviceType;   /**< type of device. */
+    const char
+    *pCfgName;       /**< the name of the device configuration, where applicable (may be NULL). */
     int32_t moduleType;         /**< module identification (when applicable). */
     void *pContext;             /**< private instance data for the device. */
+    void *pUserContext;         /**< user context attached to device. */
     uDeviceNetworkData_t networkData[U_DEVICE_NETWORKS_MAX_NUM]; /**< network cfg and private data. */
     // Note: In the future structs of function pointers for socket, MQTT etc.
     // implementations may be added here.

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,7 +42,13 @@
 #include "u_port_debug.h"
 #include "u_port_os.h"
 
-#include "kernel.h"
+#include <version.h>
+
+#if KERNEL_VERSION_NUMBER >= ZEPHYR_VERSION(3,1,0)
+#include <zephyr/kernel.h>
+#else
+#include <kernel.h>
+#endif
 
 #ifdef CONFIG_ARCH_POSIX
 #include "posix_board_if.h"
@@ -201,6 +207,5 @@ void k_sys_fatal_error_handler(unsigned int reason, const z_arch_esf_t *esf)
     uDebugUtilsDumpThreads();
 }
 #endif
-
 
 // End of file

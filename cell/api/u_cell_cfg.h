@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -101,15 +101,49 @@ typedef enum {
  * FUNCTIONS
  * -------------------------------------------------------------- */
 
-/** Set the bands to be used by the cellular module.
- * The module must be powered on for this to work but must NOT be
- * connected to the cellular network (e.g. by calling
- * uCellNetDisconnect() to be sure) and the module must be
+/** Sets the bands to be used by the cellular module.  See also
+ * uCellCfgSetBandMask(); the difference with uCellCfgSetBands() is
+ * that it builds the band mask itself.  Any existing bands are
+ * replaced by the bands provided to this API.  The module must be
+ * powered on for this to work but must NOT be connected to the
+ * cellular network (e.g. by calling uCellNetDisconnect() to be sure)
+ * and the module must be re-booted afterwards (with a call to
+ * uCellPwrReboot()) for it to take effect.
+ *
+ * Note: only for LENA-R8, setting numBands to 0 means "enable all bands".
+ *
+ * @param cellHandle  the handle of the cellular instance.
+ * @param rat         the RAT to set the band mask for; must represent
+ *                    a single RAT, for example #U_CELL_NET_RAT_LTE or
+ *                    #U_CELL_NET_RAT_GSM_GPRS_EGPRS, rather than a
+ *                    multi-mode RAT (for example #U_CELL_NET_RAT_GSM_UMTS).
+ * @param numBands    specify the number of bands to be set.
+ * @param[in] pBands  pointer to the array containing the bands that
+ *                    are desired to be set; for example, band
+ *                    numbers 2, 3, 71 and 85.
+ * @return            zero on success or negative error code
+ *                    on failure.
+ */
+int32_t uCellCfgSetBands(uDeviceHandle_t cellHandle,
+                         uCellNetRat_t rat,
+                         size_t numBands,
+                         uint8_t *pBands);
+
+/** Set the bands to be used by the cellular module.  See also
+ * uCellCfgSetBands().  The module must be powered on for this to
+ * work but must NOT be connected to the cellular network (e.g. by
+ * calling uCellNetDisconnect() to be sure) and the module must be
  * re-booted afterwards (with a call to uCellPwrReboot()) for it to
  * take effect.
  *
+ * Note: for LENA-R8, and LENA-R8 alone, setting an empty
+ * bandmask means "enable all bands".
+ *
  * @param cellHandle  the handle of the cellular instance.
- * @param rat         the RAT to set the band mask for.
+ * @param rat         the RAT to set the band mask for; must represent
+ *                    a single RAT, for example #U_CELL_NET_RAT_LTE or
+ *                    #U_CELL_NET_RAT_GSM_GPRS_EGPRS, rather than a
+ *                    multi-mode RAT (for example #U_CELL_NET_RAT_GSM_UMTS).
  * @param bandMask1   the first band mask where bit 0 is band 1
  *                    and bit 63 is band 64.
  * @param bandMask2   the second band mask where bit 0 is band 65
@@ -125,9 +159,16 @@ int32_t uCellCfgSetBandMask(uDeviceHandle_t cellHandle,
 /** Get the bands being used by the cellular module.
  * The module must be powered on for this to work.
  *
+ * Note: for LENA-R8, and LENA-R8 alone, if *pBandMask1 and
+ * *pBandMask2 are both zero, this means that all bands are enabled.
+ *
  * @param cellHandle      the handle of the cellular instance.
  * @param rat             the radio access technology to obtain the
- *                        band mask for.
+ *                        band mask for; must represent a single
+ *                        RAT, for example #U_CELL_NET_RAT_LTE or
+ *                        #U_CELL_NET_RAT_GSM_GPRS_EGPRS, rather than
+ *                        a multi-mode RAT (for example
+ *                        #U_CELL_NET_RAT_GSM_UMTS).
  * @param[out] pBandMask1 pointer to a place to store band mask 1,
  *                        where bit 0 is band 1 and bit 63 is band 64,
  *                        cannot be NULL.
@@ -399,7 +440,7 @@ int32_t uCellCfgSetGreetingCallback(uDeviceHandle_t cellHandle,
  * @param size        the number of bytes available at pStr,
  *                    including room for a null terminator.
  * @return            on success, the number of characters copied into
- *                    pStr NOT including the terminator (i.e. as
+ *                    pStr NOT including the terminator (as
  *                    strlen() would return), on failure negative
  *                    error code.  If there is no greeting message
  *                    zero will be returned.
@@ -477,6 +518,24 @@ int32_t uCellCfgSetGnssProfile(uDeviceHandle_t cellHandle, int32_t profileBitMap
  */
 int32_t uCellCfgGetGnssProfile(uDeviceHandle_t cellHandle, char *pServerName,
                                size_t sizeBytes);
+
+/** Set the time in the cellular module.  You may need to use this if time
+ * is important to you (e.g. for certificate checking) and your cellular
+ * network does not provide time and time-zone information.
+ *
+ * To read the time, use uCellInfoGetTime() or uCellInfoGetTimeUtc(),
+ *
+ * @param cellHandle          the handle of the cellular instance.
+ * @param timeLocal           the local time in seconds since midnight on
+ *                            1st Jan 1970, (Unix time, but local rather
+ *                            than UTC).
+ * @param timeZoneSeconds     the time-zone offset of timeLocal in seconds; for
+ *                            example, if you are one hour ahead of UTC
+ *                            timeZoneSeconds would be 3600.
+ * @return                    zero on success or negative error code on failure.
+ */
+int64_t uCellCfgSetTime(uDeviceHandle_t cellHandle, int64_t timeLocal,
+                        int32_t timeZoneSeconds);
 
 #ifdef __cplusplus
 }

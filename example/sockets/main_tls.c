@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@
  * -------------------------------------------------------------- */
 
 // Echo server URL and port number
-#define MY_SERVER_NAME "ubxlib.redirectme.net"
+#define MY_SERVER_NAME "ubxlib.com"
 #define MY_SERVER_PORT 5065
 
 // For u-blox internal testing only
@@ -68,13 +68,18 @@
  * VARIABLES
  * -------------------------------------------------------------- */
 
+// ZEPHYR USERS may prefer to set the device and network
+// configuration from their device tree, rather than in this C
+// code: see /port/platform/zephyr/README.md for instructions on
+// how to do that.
+
 // Cellular configuration.
 // Set U_CFG_TEST_CELL_MODULE_TYPE to your module type,
 // chosen from the values in cell/api/u_cell_module_type.h
 //
 // Note that the pin numbers are those of the MCU: if you
 // are using an MCU inside a u-blox module the IO pin numbering
-// for the module is likely different that from the MCU: check
+// for the module is likely different to that of the MCU: check
 // the data sheet for the module to determine the mapping.
 
 #ifdef U_CFG_TEST_CELL_MODULE_TYPE
@@ -100,7 +105,12 @@ static const uDeviceCfg_t gDeviceCfg = {
             .pinTxd = U_CFG_APP_PIN_CELL_TXD,
             .pinRxd = U_CFG_APP_PIN_CELL_RXD,
             .pinCts = U_CFG_APP_PIN_CELL_CTS,
-            .pinRts = U_CFG_APP_PIN_CELL_RTS
+            .pinRts = U_CFG_APP_PIN_CELL_RTS,
+#ifdef U_CFG_APP_UART_PREFIX
+            .pPrefix = U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX) // Relevant for Linux only
+#else
+            .pPrefix = NULL
+#endif
         },
     },
 };
@@ -109,17 +119,41 @@ static const uNetworkCfgCell_t gNetworkCfg = {
     .type = U_NETWORK_TYPE_CELL,
     .pApn = NULL, /* APN: NULL to accept default.  If using a Thingstream SIM enter "tsiot" here */
     .timeoutSeconds = 240 /* Connection timeout in seconds */
-    // There is an additional field here "pKeepGoingCallback",
-    // which we do NOT set, we allow the compiler to set it to 0
-    // and all will be fine. You may set the field to a function
-    // of the form "bool keepGoingCallback(uDeviceHandle_t devHandle)",
-    // e.g.:
-    // .pKeepGoingCallback = keepGoingCallback
-    // ...and your function will be called periodically during an
-    // abortable network operation such as connect/disconnect;
-    // if it returns true the operation will continue else it
-    // will be aborted, allowing you immediate control.  If this
-    // field is set, timeoutSeconds will be ignored.
+    // There are five additional fields here which we do NOT set,
+    // we allow the compiler to set them to 0 and all will be fine.
+    // The fields are:
+    //
+    // - "pKeepGoingCallback": you may set this field to a function
+    //   of the form "bool keepGoingCallback(uDeviceHandle_t devHandle)",
+    //   e.g.:
+    //
+    //   .pKeepGoingCallback = keepGoingCallback;
+    //
+    //   ...and your function will be called periodically during an
+    //   abortable network operation such as connect/disconnect;
+    //   if it returns true the operation will continue else it
+    //   will be aborted, allowing you immediate control.  If this
+    //   field is set, timeoutSeconds will be ignored.
+    //
+    // - "pUsername" and "pPassword": if you are required to set a
+    //   user name and password to go with the APN value that you
+    //   were given by your service provider, set them here.
+    //
+    // - "authenticationMode": if you MUST give a user name and
+    //   password and your cellular module does NOT support figuring
+    //   out the authentication mode automatically (e.g. SARA-R4xx,
+    //   LARA-R6 and LENA-R8 do not) then you must populate this field
+    //   with the authentication mode that should be used, see
+    //   #uCellNetAuthenticationMode_t in u_cell_net.h; there is no
+    //   harm in populating this field even if the module _does_ support
+    //   figuring out the authentication mode automatically but
+    //   you ONLY NEED TO WORRY ABOUT IT if you were given that user
+    //   name and password with the APN (which is thankfully not usual).
+    //
+    // - "pMccMnc": ONLY required if you wish to connect to a specific
+    //   MCC/MNC rather than to the best available network; should point
+    //   to the null-terminated string giving the MCC and MNC of the PLMN
+    //   to use (for example "23410").
 };
 #else
 // No module available - set some dummy values to make test system happy
@@ -223,31 +257,30 @@ static void checkCredentials(uDeviceHandle_t devHandle,
     }
     pSettings->pClientPrivateKeyName = "ubxlib_test_client_key";
 
-    // Check if the server certificate is already
+    // Check if the CA certificate is already
     // stored on the module
     if ((uSecurityCredentialGetHash(devHandle,
                                     U_SECURITY_CREDENTIAL_ROOT_CA_X509,
-                                    "ubxlib_test_server_cert",
+                                    "ubxlib_test_ca_cert",
                                     hash) != 0) ||
-        (memcmp(hash, gUEchoServerServerCertHash, sizeof(hash)) != 0)) {
+        (memcmp(hash, gUEchoServerCaCertHash, sizeof(hash)) != 0)) {
         // Either it is not there or the wrong hash has been
-        // reported, load the server certificate into the module
+        // reported, load the CA certificate into the module
         // as a trusted key
         // IMPORTANT: in the real world you would not need to do
         // this, you would have root certificates loaded to do the
         // job.  We are only doing it here because the ubxlib echo
         // server is simply for testing and therefore not part of
         // any chain of trust
-        uPortLog("U_SECURITY_TLS_TEST: storing server certificate"
-                 " for the secure echo server...\n");
+        uPortLog("U_SECURITY_TLS_TEST: storing CA certificate...\n");
         uSecurityCredentialStore(devHandle,
                                  U_SECURITY_CREDENTIAL_ROOT_CA_X509,
-                                 "ubxlib_test_server_cert",
-                                 gpUEchoServerServerCertPem,
-                                 strlen(gpUEchoServerServerCertPem),
+                                 "ubxlib_test_ca_cert",
+                                 gpUEchoServerCaCertPem,
+                                 strlen(gpUEchoServerCaCertPem),
                                  NULL, NULL);
     }
-    pSettings->pRootCaCertificateName = "ubxlib_test_server_cert";
+    pSettings->pRootCaCertificateName = "ubxlib_test_ca_cert";
 }
 
 /* ----------------------------------------------------------------
@@ -329,7 +362,7 @@ U_PORT_TEST_FUNCTION("[example]", "exampleSocketsTls")
                     // and print the echo that comes back
                     uPortLog("Sending data...\n");
                     while ((x >= 0) && (txSize > 0)) {
-                        x = uSockWrite(sock, message, txSize);
+                        x = uSockWrite(sock, message + (sizeof(message) - txSize), txSize);
                         if (x > 0) {
                             txSize -= x;
                         }

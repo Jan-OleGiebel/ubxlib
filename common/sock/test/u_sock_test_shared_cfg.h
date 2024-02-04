@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,13 +34,13 @@
 #ifndef U_SOCK_TEST_ECHO_UDP_SERVER_DOMAIN_NAME
 /** Echo server to use for UDP sockets testing as a domain name.
  */
-# define U_SOCK_TEST_ECHO_UDP_SERVER_DOMAIN_NAME  "ubxlib.redirectme.net"
+# define U_SOCK_TEST_ECHO_UDP_SERVER_DOMAIN_NAME  "ubxlib.com"
 #endif
 
 #ifndef U_SOCK_TEST_ECHO_UDP_SERVER_IP_ADDRESS
 /** Echo server to use for UDP sockets testing as an IP address.
  */
-# define U_SOCK_TEST_ECHO_UDP_SERVER_IP_ADDRESS  "159.65.52.65"
+# define U_SOCK_TEST_ECHO_UDP_SERVER_IP_ADDRESS  "18.133.144.142"
 #endif
 
 #ifndef U_SOCK_TEST_ECHO_UDP_SERVER_PORT
@@ -49,16 +49,34 @@
 # define U_SOCK_TEST_ECHO_UDP_SERVER_PORT  5050
 #endif
 
+#ifndef U_SOCK_TEST_ECHO_SECURE_UDP_SERVER_DOMAIN_NAME
+/** Echo server to use for secure (DTLS) UDP sockets testing as a domain name.
+ */
+# define U_SOCK_TEST_ECHO_SECURE_UDP_SERVER_DOMAIN_NAME  "ubxlib.com"
+#endif
+
+#ifndef U_SOCK_TEST_ECHO_SECURE_UDP_SERVER_IP_ADDRESS
+/** Echo server to use for secure (DTLS) UDP sockets testing as an IP address.
+ */
+# define U_SOCK_TEST_ECHO_SECURE_UDP_SERVER_IP_ADDRESS  "18.133.144.142"
+#endif
+
+#ifndef U_SOCK_TEST_ECHO_SECURE_UDP_SERVER_PORT
+/** Port number on the echo server to use for secure (DTLS) UDP testing.
+ */
+# define U_SOCK_TEST_ECHO_SECURE_UDP_SERVER_PORT  5070
+#endif
+
 #ifndef U_SOCK_TEST_ECHO_TCP_SERVER_DOMAIN_NAME
 /** Echo server to use for TCP sockets testing as a domain name.
  */
-# define U_SOCK_TEST_ECHO_TCP_SERVER_DOMAIN_NAME  "ubxlib.redirectme.net"
+# define U_SOCK_TEST_ECHO_TCP_SERVER_DOMAIN_NAME  "ubxlib.com"
 #endif
 
 #ifndef U_SOCK_TEST_ECHO_TCP_SERVER_IP_ADDRESS
 /** Echo server to use for TCP sockets testing as an IP address.
  */
-# define U_SOCK_TEST_ECHO_TCP_SERVER_IP_ADDRESS  "159.65.52.65"
+# define U_SOCK_TEST_ECHO_TCP_SERVER_IP_ADDRESS  "18.133.144.142"
 #endif
 
 #ifndef U_SOCK_TEST_ECHO_TCP_SERVER_PORT
@@ -70,13 +88,13 @@
 #ifndef U_SOCK_TEST_ECHO_SECURE_TCP_SERVER_DOMAIN_NAME
 /** Echo server to use for secure (TLS) TCP sockets testing as a domain name.
  */
-# define U_SOCK_TEST_ECHO_SECURE_TCP_SERVER_DOMAIN_NAME  "ubxlib.redirectme.net"
+# define U_SOCK_TEST_ECHO_SECURE_TCP_SERVER_DOMAIN_NAME  "ubxlib.com"
 #endif
 
 #ifndef U_SOCK_TEST_ECHO_SECURE_TCP_SERVER_IP_ADDRESS
 /** Echo server to use for secure (TLS) TCP sockets testing as an IP address.
  */
-# define U_SOCK_TEST_ECHO_SECURE_TCP_SERVER_IP_ADDRESS  "159.65.52.65"
+# define U_SOCK_TEST_ECHO_SECURE_TCP_SERVER_IP_ADDRESS  "18.133.144.142"
 #endif
 
 #ifndef U_SOCK_TEST_ECHO_SECURE_TCP_SERVER_PORT
@@ -99,6 +117,20 @@
  * data over UDP.
  */
 # define U_SOCK_TEST_UDP_RETRIES 10
+#endif
+
+#ifndef U_SOCK_TEST_MAX_TCP_READ_WRITE_SIZE
+/** The maximum TCP read/write size to use during testing.
+ */
+# define U_SOCK_TEST_MAX_TCP_READ_WRITE_SIZE 1024
+#endif
+
+#ifndef U_SOCK_TEST_MIN_TCP_READ_WRITE_SIZE
+/** Sending just one byte doesn't always cause all
+ * modules to actually send the data in a reasonable
+ * time so set a sensible minimum here for testing.
+ */
+# define U_SOCK_TEST_MIN_TCP_READ_WRITE_SIZE 128
 #endif
 
 #ifndef U_SOCK_TEST_TCP_CLOSE_SECONDS

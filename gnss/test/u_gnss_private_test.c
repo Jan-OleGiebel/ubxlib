@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,10 +52,12 @@
 #include "u_ubx_protocol.h"
 
 #include "u_port_clib_platform_specific.h" // in some cases rand()
-#include "u_port_heap.h"
 #include "u_port.h"
+#include "u_port_os.h"
+#include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h" // Needed by u_gnss_private.h
+
+#include "u_test_util_resource_check.h"
 
 #include "u_ringbuffer.h"
 
@@ -361,7 +363,6 @@ static size_t makeNmeaMessage(char *pBuffer, const char *pTalkerSentenceStr,
     *pBuffer = '\r';
     pBuffer++;
     *pBuffer = '\n';
-    pBuffer++;
 
     return size;
 }
@@ -463,7 +464,7 @@ static bool checkDecodeUbx(uRingBuffer_t *pRingBuffer, int32_t readHandle,
     int32_t errorCodeOrSize;
 
     msgId.type = U_GNSS_PROTOCOL_UBX;
-    msgId.id.ubx = (((uint16_t) messageClass) << 8) + messageId;
+    msgId.id.ubx = (uint16_t) ((((uint16_t) messageClass) << 8) + messageId);
 
     // Add pBuffer to the ring buffer and attempt to decode the message
     U_PORT_TEST_ASSERT(uRingBufferAdd(pRingBuffer, pBuffer, bufferSize));
@@ -517,13 +518,13 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssPrivateNmea")
     char *pMessage;
     size_t messageSize;
     size_t z;
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // Whatever called us likely initialised the
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uPortInit() == 0);
 
@@ -640,20 +641,11 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssPrivateNmea")
 
     uPortDeinit();
 
-# ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'ed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
-# else
-    (void) heapUsed;
-# endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test the RTCM message decode function; not tested on Zephyr for
@@ -668,13 +660,13 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssPrivateRtcm")
     char *pMessage;
     size_t bufferSize;
     size_t z;
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // Whatever called us likely initialised the
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uPortInit() == 0);
 
@@ -757,20 +749,11 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssPrivateRtcm")
 
     uPortDeinit();
 
-# ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'ed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
-# else
-    (void) heapUsed;
-# endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test the UBX message decode function; not tested on Zephyr for
@@ -785,13 +768,13 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssPrivateUbx")
     uint8_t messageId;
     size_t bufferSize;
     size_t y;
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // Whatever called us likely initialised the
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uPortInit() == 0);
 
@@ -844,7 +827,7 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssPrivateUbx")
         pMessage = gpBuffer + (rand() % U_GNSS_PRIVATE_TEST_RUBBISH_ROOM_BYTES);
         U_PORT_TEST_ASSERT(uUbxProtocolEncode(messageClass, messageId,
                                               (const char *) gpBody, bodySize,
-                                              pMessage) == bodySize + U_UBX_PROTOCOL_OVERHEAD_LENGTH_BYTES);
+                                              pMessage) == (int32_t)bodySize + U_UBX_PROTOCOL_OVERHEAD_LENGTH_BYTES);
         // Decode it with a wild-card ID first
         U_PORT_TEST_ASSERT(checkDecodeUbx(&gRingBuffer, readHandle, gpBuffer, bufferSize,
                                           U_GNSS_UBX_MESSAGE_CLASS_ALL, U_GNSS_UBX_MESSAGE_ID_ALL,
@@ -898,20 +881,11 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssPrivateUbx")
 
     uPortDeinit();
 
-# ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'ed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
-# else
-    (void) heapUsed;
-# endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 #endif // #ifndef __ZEPHYR__
@@ -922,30 +896,15 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssPrivateUbx")
  */
 U_PORT_TEST_FUNCTION("[gnss]", "gnssPrivateCleanUp")
 {
-    int32_t x;
-
     uPortFree(gpBody);
     uPortFree(gpBuffer);
     uRingBufferDelete(&gRingBuffer);
     uPortFree(gpLinearBuffer);
 
     uGnssDeinit();
-
-    x = uPortTaskStackMinFree(NULL);
-    if (x != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d byte(s)"
-                          " free at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-    x = uPortGetHeapMinFree();
-    if (x >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free"
-                          " at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 // End of file

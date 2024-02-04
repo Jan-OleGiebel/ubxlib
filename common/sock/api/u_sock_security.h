@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,7 +53,9 @@ extern "C" {
  * -------------------------------------------------------------- */
 
 /** Add security to the given socket.  Should be called before
- * uSockConnect() or uSockSendTo().
+ * uSockConnect().  Note that to apply security to a UDP socket
+ * (i.e. to use DTLS) the socket must be connected (and so uSockRead() /
+ * uSockWrite() must be used).
  *
  * @param descriptor  the descriptor of the socket.
  * @param pSettings   a pointer to the security settings to apply.

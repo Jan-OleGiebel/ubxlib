@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,6 +43,8 @@
 #include "u_port.h"
 #include "u_port_debug.h"
 #include "u_port_os.h"
+
+#include "u_test_util_resource_check.h"
 
 #ifdef U_CFG_TEST_CELL_MODULE_TYPE
 # include "u_cell_module_type.h"
@@ -104,7 +106,8 @@
     ((U_CFG_TEST_CELL_MODULE_TYPE != U_CELL_MODULE_TYPE_SARA_U201) &&      \
      (U_CFG_TEST_CELL_MODULE_TYPE != U_CELL_MODULE_TYPE_SARA_R410M_02B) && \
      (U_CFG_TEST_CELL_MODULE_TYPE != U_CELL_MODULE_TYPE_SARA_R412M_02B) && \
-     (U_CFG_TEST_CELL_MODULE_TYPE != U_CELL_MODULE_TYPE_SARA_R412M_03B))
+     (U_CFG_TEST_CELL_MODULE_TYPE != U_CELL_MODULE_TYPE_SARA_R412M_03B) && \
+     (U_CFG_TEST_CELL_MODULE_TYPE != U_CELL_MODULE_TYPE_LENA_R8))
 #endif
 
 /* ----------------------------------------------------------------
@@ -210,7 +213,7 @@ U_PORT_TEST_FUNCTION("[securityCredential]", "securityCredentialTest")
 {
     uNetworkTestList_t *pList;
     uDeviceHandle_t devHandle = NULL;
-    int32_t heapUsed;
+    int32_t resourceCount;
     uSecurityCredential_t credential;
     int32_t otherCredentialCount;
     int32_t z;
@@ -224,7 +227,7 @@ U_PORT_TEST_FUNCTION("[securityCredential]", "securityCredentialTest")
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uPortInit() == 0);
     U_PORT_TEST_ASSERT(uDeviceInit() == 0);
@@ -250,6 +253,14 @@ U_PORT_TEST_FUNCTION("[securityCredential]", "securityCredentialTest")
     int32_t x = 0;
     for (uNetworkTestList_t *pTmp = pList; pTmp != NULL; pTmp = pTmp->pNext, x++) {
         devHandle = *pTmp->pDevHandle;
+#ifdef U_UCONNECT_GEN2
+        // *** UCX WORKAROUND FIX ***
+        // No support for this yet in ucx
+        if ((pTmp->networkType = U_NETWORK_TYPE_BLE) ||
+            (pTmp->networkType = U_NETWORK_TYPE_WIFI)) {
+            continue;
+        }
+#endif
 
         U_TEST_PRINT_LINE_X("testing %s.", x, gpUNetworkTestTypeName[pTmp->networkType]);
 
@@ -310,10 +321,10 @@ U_PORT_TEST_FUNCTION("[securityCredential]", "securityCredentialTest")
             U_TEST_PRINT_LINE_X_Y("expiration %d UTC.", x, z, credential.expirationUtc);
             if (strcmp(credential.name, "ubxlib_test_cert") == 0) {
                 U_PORT_TEST_ASSERT(credential.type == U_SECURITY_CREDENTIAL_CLIENT_X509);
-                // Used to check the subject here but V5 uConnectExpress doesn't
+                // Used to check the subject here but V5 u-connectExpress doesn't
                 // give what we would expect (the subject of ubxlib_test_cert should
-                // be "ubxlib client" but uConnectExpress V5 has it as "CN=ubxlib ca",
-                // while earlier version of uConnectExpress don't report it at all),
+                // be "ubxlib client" but u-connectExpress V5 has it as "CN=ubxlib ca",
+                // while earlier version of u-connectExpress don't report it at all),
                 // so we can't check it
                 if (credential.expirationUtc != 0) {
                     U_PORT_TEST_ASSERT(credential.expirationUtc == U_SECURITY_CREDENTIAL_TEST_X509_EXPIRATION_UTC);
@@ -467,10 +478,10 @@ U_PORT_TEST_FUNCTION("[securityCredential]", "securityCredentialTest")
                 U_TEST_PRINT_LINE_X_Y("expiration %d UTC.", x, z, credential.expirationUtc);
                 if (strcmp(credential.name, "ubxlib_test_cert") == 0) {
                     U_PORT_TEST_ASSERT(credential.type == U_SECURITY_CREDENTIAL_CLIENT_X509);
-                    // Used to check the subject here but V5 uConnectExpress doesn't
+                    // Used to check the subject here but V5 u-connectExpress doesn't
                     // give what we would expect (the subject of ubxlib_test_cert should
-                    // be "ubxlib client" but uConnectExpress V5 has it as "CN=ubxlib ca",
-                    // while earlier version of uConnectExpress don't report it at all),
+                    // be "ubxlib client" but u-connectExpress V5 has it as "CN=ubxlib ca",
+                    // while earlier version of u-connectExpress don't report it at all),
                     // so we can't check it
                     if (credential.expirationUtc != 0) {
                         U_PORT_TEST_ASSERT(credential.expirationUtc == U_SECURITY_CREDENTIAL_TEST_X509_EXPIRATION_UTC);
@@ -544,20 +555,11 @@ U_PORT_TEST_FUNCTION("[securityCredential]", "securityCredentialTest")
     uDeviceDeinit();
     uPortDeinit();
 
-#ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'ed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("during this test we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
-#else
-    (void) heapUsed;
-#endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Clean-up to be run at the end of this round of tests, just

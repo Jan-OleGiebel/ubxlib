@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,6 +52,8 @@
 #include "u_port_os.h"   // Required by u_cell_private.h
 #include "u_port_uart.h"
 
+#include "u_test_util_resource_check.h"
+
 #include "u_at_client.h"
 
 #include "u_cell_module_type.h"
@@ -77,10 +79,17 @@
  */
 #define U_TEST_PRINT_LINE(format, ...) uPortLog(U_TEST_PREFIX format "\n", ##__VA_ARGS__)
 
-#ifndef U_CELL_INFO_TEST_MIN_UTC_TIME
-/** A minimum value for UTC time to test against (21 July 2021 13:40:36).
+#ifndef U_CELL_INFO_TEST_MIN_TIME
+/** A minimum value for time to test against (21 July 2021 13:40:36).
  */
-# define U_CELL_INFO_TEST_MIN_UTC_TIME 1626874836
+# define U_CELL_INFO_TEST_MIN_TIME 1626874836
+#endif
+
+#ifndef U_CELL_INFO_TEST_TIME_MARGIN_SECONDS
+/** The permitted margin between reading time several times during
+ * testing, in seconds.
+ */
+# define U_CELL_INFO_TEST_TIME_MARGIN_SECONDS 10
 #endif
 
 /* ----------------------------------------------------------------
@@ -132,7 +141,7 @@ U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoImeiEtc")
     uDeviceHandle_t cellHandle;
     char buffer[64];
     int32_t bytesRead;
-    int32_t heapUsed;
+    int32_t resourceCount;
 #if defined(U_CFG_APP_PIN_CELL_RTS_GET) || defined(U_CFG_APP_PIN_CELL_CTS_GET)
     bool isEnabled;
 #endif
@@ -140,8 +149,8 @@ U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoImeiEtc")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -260,12 +269,11 @@ U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoImeiEtc")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test all the radio parameters functions.
@@ -273,39 +281,63 @@ U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoImeiEtc")
 U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoRadioParameters")
 {
     uDeviceHandle_t cellHandle;
+    const uCellPrivateModule_t *pModule;
     int32_t x;
     int32_t snrDb;
     size_t count;
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
                                                 &gHandles, true) == 0);
     cellHandle = gHandles.cellHandle;
 
-    U_TEST_PRINT_LINE("checking values before a refresh (should return errors)...");
-    U_PORT_TEST_ASSERT(uCellInfoGetRssiDbm(cellHandle) == 0);
-    U_PORT_TEST_ASSERT(uCellInfoGetRsrpDbm(cellHandle) == 0);
-    U_PORT_TEST_ASSERT(uCellInfoGetRsrqDb(cellHandle) == 0x7FFFFFFF);
-    U_PORT_TEST_ASSERT(uCellInfoGetSnrDb(cellHandle, &snrDb) != 0);
-    U_PORT_TEST_ASSERT(uCellInfoGetCellId(cellHandle) == -1);
-    U_PORT_TEST_ASSERT(uCellInfoGetEarfcn(cellHandle) == -1);
+    // Get the private module data as we need it for testing
+    pModule = pUCellPrivateGetModule(gHandles.cellHandle);
+    U_PORT_TEST_ASSERT(pModule != NULL);
+    //lint -esym(613, pModule) Suppress possible use of NULL pointer
+    // for pModule from now on
 
-    U_TEST_PRINT_LINE("checking values after a refresh but before"
-                      " network registration (should return errors)...");
-    U_PORT_TEST_ASSERT(uCellInfoRefreshRadioParameters(cellHandle) != 0);
-    U_PORT_TEST_ASSERT(uCellInfoGetRssiDbm(cellHandle) == 0);
-    U_PORT_TEST_ASSERT(uCellInfoGetRsrpDbm(cellHandle) == 0);
-    U_PORT_TEST_ASSERT(uCellInfoGetRsrqDb(cellHandle) == 0x7FFFFFFF);
-    U_PORT_TEST_ASSERT(uCellInfoGetSnrDb(cellHandle, &snrDb) != 0);
-    U_PORT_TEST_ASSERT(uCellInfoGetCellId(cellHandle) == -1);
-    U_PORT_TEST_ASSERT(uCellInfoGetEarfcn(cellHandle) == -1);
+    if (pModule->moduleType != U_CELL_MODULE_TYPE_LENA_R8) {
+        U_TEST_PRINT_LINE("checking values before a refresh (should return errors)...");
+        U_PORT_TEST_ASSERT(uCellInfoGetRssiDbm(cellHandle) == 0);
+        U_PORT_TEST_ASSERT(uCellInfoGetRsrpDbm(cellHandle) == 0);
+        U_PORT_TEST_ASSERT(uCellInfoGetRsrqDb(cellHandle) == 0x7FFFFFFF);
+        U_PORT_TEST_ASSERT(uCellInfoGetSnrDb(cellHandle, &snrDb) != 0);
+        U_PORT_TEST_ASSERT(uCellInfoGetCellId(cellHandle) == -1);
+        U_PORT_TEST_ASSERT(uCellInfoGetCellIdLogical(cellHandle) == -1);
+        U_PORT_TEST_ASSERT(uCellInfoGetCellIdPhysical(cellHandle) == -1);
+        U_PORT_TEST_ASSERT(uCellInfoGetEarfcn(cellHandle) == -1);
+
+        U_TEST_PRINT_LINE("checking values after a refresh but before"
+                          " network registration (should return errors)...");
+        U_PORT_TEST_ASSERT(uCellInfoRefreshRadioParameters(cellHandle) != 0);
+        U_PORT_TEST_ASSERT(uCellInfoGetRssiDbm(cellHandle) == 0);
+        U_PORT_TEST_ASSERT(uCellInfoGetRsrpDbm(cellHandle) == 0);
+        U_PORT_TEST_ASSERT(uCellInfoGetRsrqDb(cellHandle) == 0x7FFFFFFF);
+        U_PORT_TEST_ASSERT(uCellInfoGetSnrDb(cellHandle, &snrDb) != 0);
+        U_PORT_TEST_ASSERT(uCellInfoGetCellId(cellHandle) == -1);
+        U_PORT_TEST_ASSERT(uCellInfoGetCellIdLogical(cellHandle) == -1);
+        U_PORT_TEST_ASSERT(uCellInfoGetCellIdPhysical(cellHandle) == -1);
+        U_PORT_TEST_ASSERT(uCellInfoGetEarfcn(cellHandle) == -1);
+    } else {
+        U_TEST_PRINT_LINE("LENA-R8 only supports RSSI and logical cell ID, only testing them.");
+        U_PORT_TEST_ASSERT(uCellInfoGetRssiDbm(cellHandle) == 0);
+        U_PORT_TEST_ASSERT(uCellInfoGetRsrpDbm(cellHandle) == 0);
+        U_PORT_TEST_ASSERT(uCellInfoGetRsrqDb(cellHandle) == 0x7FFFFFFF);
+        U_PORT_TEST_ASSERT(uCellInfoGetSnrDb(cellHandle, &snrDb) == (int32_t) U_ERROR_COMMON_NOT_SUPPORTED);
+        U_PORT_TEST_ASSERT(uCellInfoGetCellId(cellHandle) ==  -1);
+        U_PORT_TEST_ASSERT(uCellInfoGetCellIdLogical(cellHandle) == -1);
+        U_PORT_TEST_ASSERT(uCellInfoGetCellIdPhysical(cellHandle) ==  (int32_t)
+                           U_ERROR_COMMON_NOT_SUPPORTED);
+        U_PORT_TEST_ASSERT(uCellInfoGetEarfcn(cellHandle) ==  (int32_t) U_ERROR_COMMON_NOT_SUPPORTED);
+    }
 
     U_TEST_PRINT_LINE("checking values after registration...");
     gStopTimeMs = uPortGetTickTimeMs() +
@@ -322,11 +354,21 @@ U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoRadioParameters")
     U_PORT_TEST_ASSERT(count > 0);
     // Should now have everything
     if (U_CELL_PRIVATE_RAT_IS_EUTRAN(uCellNetGetActiveRat(cellHandle))) {
-        // Only get these with AT+UCGED on EUTRAN
-        U_PORT_TEST_ASSERT(uCellInfoGetRsrpDbm(cellHandle) < 0);
-        U_PORT_TEST_ASSERT(uCellInfoGetRsrqDb(cellHandle) != 0x7FFFFFFF);
-        U_PORT_TEST_ASSERT(uCellInfoGetCellId(cellHandle) >= 0);
-        U_PORT_TEST_ASSERT(uCellInfoGetEarfcn(cellHandle) >= 0);
+        if (pModule->moduleType != U_CELL_MODULE_TYPE_LENA_R8) {
+            // Only get these with AT+UCGED on EUTRAN and not at all with LENA-R8
+            U_PORT_TEST_ASSERT(uCellInfoGetRsrpDbm(cellHandle) < 0);
+            U_PORT_TEST_ASSERT(uCellInfoGetRsrqDb(cellHandle) != 0x7FFFFFFF);
+            U_PORT_TEST_ASSERT(uCellInfoGetCellId(cellHandle) >= 0);
+            U_PORT_TEST_ASSERT(uCellInfoGetCellIdPhysical(cellHandle) >= 0);
+            U_PORT_TEST_ASSERT(uCellInfoGetEarfcn(cellHandle) >= 0);
+        } else {
+            U_PORT_TEST_ASSERT(uCellInfoGetRsrpDbm(cellHandle) == 0);
+            U_PORT_TEST_ASSERT(uCellInfoGetRsrqDb(cellHandle) == 0x7FFFFFFF);
+            U_PORT_TEST_ASSERT(uCellInfoGetCellId(cellHandle) >= 0);
+            U_PORT_TEST_ASSERT(uCellInfoGetCellIdPhysical(cellHandle) ==  (int32_t)
+                               U_ERROR_COMMON_NOT_SUPPORTED);
+            U_PORT_TEST_ASSERT(uCellInfoGetEarfcn(cellHandle) == (int32_t) U_ERROR_COMMON_NOT_SUPPORTED);
+        }
     }
     // ...however RSSI can take a long time to
     // get so keep trying if it has not arrived
@@ -336,14 +378,20 @@ U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoRadioParameters")
         uPortTaskBlock(5000);
     }
     U_PORT_TEST_ASSERT(uCellInfoGetRssiDbm(cellHandle) < 0);
-    if (U_CELL_PRIVATE_RAT_IS_EUTRAN(uCellNetGetActiveRat(cellHandle))) {
-        // Only get this if we have RSRP as well
-        x = uCellInfoGetSnrDb(cellHandle, &snrDb);
-        if (x == 0) {
-            U_TEST_PRINT_LINE("SNR is %d dB.", snrDb);
+    U_PORT_TEST_ASSERT(uCellInfoGetCellIdLogical(cellHandle) >= 0);
+    if (pModule->moduleType != U_CELL_MODULE_TYPE_LENA_R8) {
+        if (U_CELL_PRIVATE_RAT_IS_EUTRAN(uCellNetGetActiveRat(cellHandle))) {
+            // Only get this if we have RSRP as well
+            x = uCellInfoGetSnrDb(cellHandle, &snrDb);
+            if (x == 0) {
+                U_TEST_PRINT_LINE("SNR is %d dB.", snrDb);
+            }
+            U_PORT_TEST_ASSERT((x == 0) || (x == (int32_t) U_CELL_ERROR_VALUE_OUT_OF_RANGE) ||
+                               (x == (int32_t) U_ERROR_COMMON_NOT_SUPPORTED));
         }
-        U_PORT_TEST_ASSERT((x == 0) || (x == (int32_t) U_CELL_ERROR_VALUE_OUT_OF_RANGE) ||
-                           (x == (int32_t) U_ERROR_COMMON_NOT_SUPPORTED));
+    } else {
+        U_PORT_TEST_ASSERT(uCellInfoGetSnrDb(cellHandle,
+                                             &snrDb) ==  (int32_t) U_ERROR_COMMON_NOT_SUPPORTED);
     }
 
     // Disconnect
@@ -353,12 +401,11 @@ U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoRadioParameters")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heap < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test fetching the time.
@@ -366,15 +413,18 @@ U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoRadioParameters")
 U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoTime")
 {
     uDeviceHandle_t cellHandle;
+    int64_t timeUtc;
+    int64_t timeLocal;
+    int32_t timeZoneOffsetSeconds = 0;
     int64_t x;
-    int32_t heapUsed;
+    int32_t resourceCount;
     char buffer[32] = {0};
 
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -386,14 +436,29 @@ U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoTime")
                   (U_CELL_TEST_CFG_CONNECT_TIMEOUT_SECONDS * 1000);
     U_PORT_TEST_ASSERT(uCellNetRegister(cellHandle, NULL, keepGoingCallback) == 0);
 
-    U_TEST_PRINT_LINE("fetching the time...");
-    x = uCellInfoGetTimeUtc(cellHandle);
-    U_TEST_PRINT_LINE("UTC time is %d.", (int32_t) x);
-    U_PORT_TEST_ASSERT(x > U_CELL_INFO_TEST_MIN_UTC_TIME);
+    U_TEST_PRINT_LINE("fetching the UTC time...");
+    timeUtc = uCellInfoGetTimeUtc(cellHandle);
+    U_TEST_PRINT_LINE("UTC time is %d.", (int32_t) timeUtc);
+    U_PORT_TEST_ASSERT(timeUtc > U_CELL_INFO_TEST_MIN_TIME);
 
     U_TEST_PRINT_LINE("fetching the time string...");
     U_PORT_TEST_ASSERT(uCellInfoGetTimeUtcStr(cellHandle, buffer, sizeof(buffer)) >= 0);
     U_TEST_PRINT_LINE("UTC time: %s.", buffer);
+
+    U_TEST_PRINT_LINE("fetching the local time without timezone...");
+    x = uCellInfoGetTime(cellHandle, NULL);
+    U_TEST_PRINT_LINE("local time is %d.", (int32_t) x);
+    U_PORT_TEST_ASSERT(x > U_CELL_INFO_TEST_MIN_TIME);
+
+    U_TEST_PRINT_LINE("...and again with timezone.");
+    timeLocal = uCellInfoGetTime(cellHandle, &timeZoneOffsetSeconds);
+    U_TEST_PRINT_LINE("local time is %d, timezone is %d, therefore UTC time is %d.",
+                      (int32_t) timeLocal, timeZoneOffsetSeconds,
+                      (int32_t) (timeLocal - timeZoneOffsetSeconds));
+    U_PORT_TEST_ASSERT(timeLocal - x < U_CELL_INFO_TEST_TIME_MARGIN_SECONDS);
+    U_PORT_TEST_ASSERT(timeLocal - timeZoneOffsetSeconds >= timeUtc);
+    U_PORT_TEST_ASSERT((timeLocal - timeZoneOffsetSeconds) - timeUtc <
+                       U_CELL_INFO_TEST_TIME_MARGIN_SECONDS);
 
     // Disconnect
     U_PORT_TEST_ASSERT(uCellNetDisconnect(cellHandle, NULL) == 0);
@@ -403,12 +468,11 @@ U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoTime")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heap < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Clean-up to be run at the end of this round of tests, just
@@ -417,25 +481,10 @@ U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoTime")
  */
 U_PORT_TEST_FUNCTION("[cellInfo]", "cellInfoCleanUp")
 {
-    int32_t x;
-
     uCellTestPrivateCleanup(&gHandles);
-
-    x = uPortTaskStackMinFree(NULL);
-    if (x != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d"
-                          " byte(s) free at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-    x = uPortGetHeapMinFree();
-    if (x >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free at the"
-                          " end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 #endif // #ifdef U_CFG_TEST_CELL_MODULE_TYPE

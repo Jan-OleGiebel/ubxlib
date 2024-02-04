@@ -2,7 +2,7 @@
 These examples demonstrates how to bring up a network connection using a u-blox module and make a TCP or UDP sockets connection, optionally over a TLS-secured link, to a server on the public internet.
 
 # A Note On TLS Security
-TLS security can be applied in at least three different ways, all of which can be performed using the `main_tls.c` example by tweaking the [settings structure](/common/security/api/u_security_tls.h#L283):
+TLS security can be applied in at least three different ways, all of which can be performed using the `main_tls.c` and `main_dtls.c` examples by tweaking the [settings structure](/common/security/api/u_security_tls.h#L283):
 
 - encrypted traffic only: no checking that the server is authentic and no checking by the server that you are who you say you are.  This is the simplest form of security and requires no security credentials to operate.
 - encrypted traffic plus server authentication: for this the necessary credentials must be loaded onto the module to check the server's authenticity.  For the purposes of this example the certificate of the `ubxlib` echo server is used, since the `ubxlib` echo server does not form a part of any chain of trust; in the real world with true trusted servers you would not need to do this, you load a root certificate onto the module instead and check the authenticity of the server's certificate using that.
@@ -15,7 +15,7 @@ To build and run these examples on a supported platform you need to travel down 
 
 `U_CFG_APP_FILTER`: set this to `exampleSockets` (noting that NO quotation marks should be included) to run *just* these example, as opposed to all the examples and unit tests.
 
-For the remainder of the \#defines (see "Using A xxx Module" below) you may either override their values in the same way or, if you are only running these examples, you may edit the values directly in [main.c](main.c) and [main_tls.c](main_tls.c) before compiling.
+For the remainder of the \#defines (see "Using A xxx Module" below) you may either override their values in the same way or, if you are only running these examples, you may edit the values directly in [main.c](main.c), [main_tls.c](main_tls.c) and [main_dtls.c](main_dtls.c) before compiling.
 
 # Usage (Arduino Example)
 Follow the instructions in the [port/platform/arduino](/port/platform/arduino) directory to create the Arduino library version of `ubxlib`, which will include the example here.
@@ -37,3 +37,16 @@ Obviously you will need a SIM in your board, an antenna connected and you may ne
 `U_CFG_APP_PIN_SHORT_RANGE_xxx`: the default values for the MCU pins connecting your short range module to your MCU are \#defined in the file [port/platform](/port/platform)`/<platform>/mcu/<mcu>/cfg/cfg_app_platform_specific.h`.  You should check if these are correct for your board and, if not, override the values of the \#defines (where -1 means "not connected").
 
 `U_CFG_APP_SHORT_RANGE_UART`: this sets the internal HW UART block that your chosen MCU will use to talk to the Wi-Fi module.  The default is usually acceptable but if you wish to change it then consult the file [port/platform](/port/platform)`<platform>/mcu/<mcu>/cfg/cfg_hw_platform_specific.h` for other options.
+
+# Using PPP
+On the following platforms:
+
+- [ESP-IDF](/port/platform/esp-idf)
+- [Zephyr](/port/platform/zephyr)
+
+...and with following \[cellular\] modules:
+
+- SARA-R5
+- SARA-R422
+
+...it is possible to make a PPP connection between the module and the bottom of the platform's own IP stack, allowing the native applications of that platform (e.g. MQTT) to connect through the module.  Set-up for `ubxlib` is as above, plus you must define `U_CFG_PPP_ENABLE` when building `ubxlib`.  Unfortunately there will _always_ be additional platform-specific setup: for this, refer to the `README.md` of the relevant platform directory or also look at the top of the example `.c` file.

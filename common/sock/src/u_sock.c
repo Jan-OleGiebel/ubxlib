@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -329,9 +329,9 @@
                                               before the other port files if
                                               any print or scan function is used. */
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"
 
 #include "u_sock.h"
 #include "u_sock_security.h"
@@ -461,9 +461,17 @@ static int32_t init()
     // The mutexes are set up once only
     if (gMutexContainer == NULL) {
         errorCode = uPortMutexCreate(&gMutexContainer);
+        if (errorCode == 0) {
+            // Mark this as a perpetual mutex for accounting purposes
+            uPortOsResourcePerpetualAdd(U_PORT_OS_RESOURCE_TYPE_MUTEX);
+        }
     }
     if ((errorCode == 0) && (gMutexCallbacks == NULL)) {
         errorCode = uPortMutexCreate(&gMutexCallbacks);
+        if (errorCode == 0) {
+            // Mark this as a perpetual mutex for accounting purposes
+            uPortOsResourcePerpetualAdd(U_PORT_OS_RESOURCE_TYPE_MUTEX);
+        }
     }
 
     if (errorCode == 0) {
@@ -1062,77 +1070,18 @@ static void printSocketOption(const void *pOptionValue,
 }
 
 /* ----------------------------------------------------------------
- * STATIC FUNCTIONS: RECEIVING
+ * STATIC FUNCTIONS: Creating
  * -------------------------------------------------------------- */
 
-// Receive data on a socket, either UDP or TCP.
-static int32_t receive(const uSockContainer_t *pContainer,
-                       uSockAddress_t *pRemoteAddress,
-                       void *pData, size_t dataSizeBytes)
-{
-    uDeviceHandle_t devHandle = pContainer->socket.devHandle;
-    int32_t sockHandle = pContainer->socket.sockHandle;
-    int32_t negErrnoOrSize = -U_SOCK_ENOSYS;
-    int32_t startTimeMs = uPortGetTickTimeMs();
-    int32_t devType = uDeviceGetDeviceType(devHandle);
-
-    // Run around the loop until a packet of data turns up
-    // or we time out or just once if we're non-blocking.
-    do {
-        if (pContainer->socket.protocol == U_SOCK_PROTOCOL_UDP) {
-            // UDP style
-            if (devType == (int32_t) U_DEVICE_TYPE_CELL) {
-                negErrnoOrSize = uCellSockReceiveFrom(devHandle,
-                                                      sockHandle,
-                                                      pRemoteAddress,
-                                                      pData,
-                                                      dataSizeBytes);
-            } else if (devType == (int32_t) U_DEVICE_TYPE_SHORT_RANGE) {
-                negErrnoOrSize = uWifiSockReceiveFrom(devHandle,
-                                                      sockHandle,
-                                                      pRemoteAddress,
-                                                      pData,
-                                                      dataSizeBytes);
-            }
-        } else {
-            // TCP style
-            if (devType == (int32_t) U_DEVICE_TYPE_CELL) {
-                negErrnoOrSize = uCellSockRead(devHandle,
-                                               sockHandle,
-                                               pData,
-                                               dataSizeBytes);
-            } else if (devType == (int32_t) U_DEVICE_TYPE_SHORT_RANGE) {
-                negErrnoOrSize = uWifiSockRead(devHandle,
-                                               sockHandle,
-                                               pData,
-                                               dataSizeBytes);
-            }
-        }
-        if (negErrnoOrSize < 0) {
-            // Yield for the poll interval
-            uPortTaskBlock(U_SOCK_RECEIVE_POLL_INTERVAL_MS);
-        }
-    } while ((negErrnoOrSize < 0) &&
-             (pContainer->socket.blocking) &&
-             (uPortGetTickTimeMs() - startTimeMs <
-              pContainer->socket.receiveTimeoutMs));
-
-    return negErrnoOrSize;
-}
-
-/* ----------------------------------------------------------------
- * PUBLIC FUNCTIONS: CREATE/OPEN/CLOSE/CLEAN-UP
- * -------------------------------------------------------------- */
-
-// Create a socket.
-int32_t uSockCreate(uDeviceHandle_t devHandle, uSockType_t type,
-                    uSockProtocol_t protocol)
+static int32_t uSockCreateEx(uDeviceHandle_t devHandle,
+                             uSockType_t type,
+                             uSockProtocol_t protocol,
+                             int32_t sockHandle)
 {
     int32_t descriptorOrError = (int32_t) U_ERROR_COMMON_SUCCESS;
     int32_t errnoLocal;
     uSockContainer_t *pContainer = NULL;
     uSockDescriptor_t descriptor = gNextDescriptor;
-    int32_t sockHandle = -U_SOCK_ENOSYS;
 
     errnoLocal = init();
     if (errnoLocal == U_SOCK_ENONE) {
@@ -1197,19 +1146,21 @@ int32_t uSockCreate(uDeviceHandle_t devHandle, uSockType_t type,
                 // a socket handle or a negated value of errno from
                 // the U_SOCK_Exxx list
                 if (errnoLocal == 0) {
-                    if (devType == (int32_t) U_DEVICE_TYPE_CELL) {
-                        sockHandle = uCellSockCreate(devHandle,
-                                                     type, protocol);
-                        // Setting non-blocking so that
-                        // we do the blocking here instead.
-                        // Since this has no return value
-                        // we can do it at the same time
-                        uCellSockBlockingSet(devHandle,
-                                             sockHandle, false);
-                    } else if (devType == (int32_t) U_DEVICE_TYPE_SHORT_RANGE) {
-                        sockHandle = uWifiSockCreate(devHandle,
-                                                     type, protocol);
-                        // TODO: Set blocking stuff
+                    if (sockHandle < 0) {
+                        if (devType == (int32_t) U_DEVICE_TYPE_CELL) {
+                            sockHandle = uCellSockCreate(devHandle,
+                                                         type, protocol);
+                            // Setting non-blocking so that
+                            // we do the blocking here instead.
+                            // Since this has no return value
+                            // we can do it at the same time
+                            uCellSockBlockingSet(devHandle,
+                                                 sockHandle, false);
+                        } else if (devType == (int32_t) U_DEVICE_TYPE_SHORT_RANGE) {
+                            sockHandle = uWifiSockCreate(devHandle,
+                                                         type, protocol);
+                            // TODO: Set blocking stuff
+                        }
                     }
 
                     if (sockHandle >= 0) {
@@ -1243,6 +1194,76 @@ int32_t uSockCreate(uDeviceHandle_t devHandle, uSockType_t type,
     }
 
     return descriptorOrError;
+}
+
+/* ----------------------------------------------------------------
+ * STATIC FUNCTIONS: RECEIVING
+ * -------------------------------------------------------------- */
+
+// Receive data on a socket, either UDP or TCP.
+static int32_t receive(const uSockContainer_t *pContainer,
+                       uSockAddress_t *pRemoteAddress,
+                       void *pData, size_t dataSizeBytes)
+{
+    uDeviceHandle_t devHandle = pContainer->socket.devHandle;
+    int32_t sockHandle = pContainer->socket.sockHandle;
+    int32_t negErrnoOrSize = -U_SOCK_ENOSYS;
+    int32_t startTimeMs = uPortGetTickTimeMs();
+    int32_t devType = uDeviceGetDeviceType(devHandle);
+
+    // Run around the loop until a packet of data turns up
+    // or we time out or just once if we're non-blocking.
+    do {
+        if ((pContainer->socket.protocol == U_SOCK_PROTOCOL_UDP) &&
+            (pContainer->socket.pSecurityContext == NULL)) {
+            // UDP style
+            if (devType == (int32_t) U_DEVICE_TYPE_CELL) {
+                negErrnoOrSize = uCellSockReceiveFrom(devHandle,
+                                                      sockHandle,
+                                                      pRemoteAddress,
+                                                      pData,
+                                                      dataSizeBytes);
+            } else if (devType == (int32_t) U_DEVICE_TYPE_SHORT_RANGE) {
+                negErrnoOrSize = uWifiSockReceiveFrom(devHandle,
+                                                      sockHandle,
+                                                      pRemoteAddress,
+                                                      pData,
+                                                      dataSizeBytes);
+            }
+        } else {
+            // TCP or DTLS style
+            if (devType == (int32_t) U_DEVICE_TYPE_CELL) {
+                negErrnoOrSize = uCellSockRead(devHandle,
+                                               sockHandle,
+                                               pData,
+                                               dataSizeBytes);
+            } else if (devType == (int32_t) U_DEVICE_TYPE_SHORT_RANGE) {
+                negErrnoOrSize = uWifiSockRead(devHandle,
+                                               sockHandle,
+                                               pData,
+                                               dataSizeBytes);
+            }
+        }
+        if (negErrnoOrSize < 0) {
+            // Yield for the poll interval
+            uPortTaskBlock(U_SOCK_RECEIVE_POLL_INTERVAL_MS);
+        }
+    } while ((negErrnoOrSize < 0) &&
+             (pContainer->socket.blocking) &&
+             (uPortGetTickTimeMs() - startTimeMs <
+              pContainer->socket.receiveTimeoutMs));
+
+    return negErrnoOrSize;
+}
+
+/* ----------------------------------------------------------------
+ * PUBLIC FUNCTIONS: CREATE/OPEN/CLOSE/CLEAN-UP
+ * -------------------------------------------------------------- */
+
+int32_t uSockCreate(uDeviceHandle_t devHandle, uSockType_t type,
+                    uSockProtocol_t protocol)
+{
+    return uSockCreateEx(devHandle, type, protocol, -1);
 }
 
 // Make an outgoing connection on the given socket.
@@ -1332,6 +1353,8 @@ int32_t uSockConnect(uSockDescriptor_t descriptor,
         // Write the errno
         errno = errnoLocal;
         errorCode = (int32_t) U_ERROR_COMMON_BSD_ERROR;
+    } else {
+        errno = U_SOCK_ENONE;
     }
 
     return errorCode;
@@ -1448,6 +1471,7 @@ void uSockCleanUp()
         while (pContainer != NULL) {
             if ((pContainer->socket.state == U_SOCK_STATE_CLOSED) ||
                 (pContainer->socket.state == U_SOCK_STATE_CLOSING)) {
+                devHandle = NULL;
                 if (!(pContainer->isStatic)) {
                     // If this socket is not static, uncouple it
                     // If there is a previous container, move its pNext
@@ -1469,6 +1493,8 @@ void uSockCleanUp()
                     pTmp = pContainer->pNext;
                     devHandle = pContainer->socket.devHandle;
 
+                    // Free any security context associated with the socket
+                    uSecurityTlsRemove(pContainer->socket.pSecurityContext);
                     // Free the memory
                     uPortFree(pContainer);
                     // Move to the next entry
@@ -1477,6 +1503,10 @@ void uSockCleanUp()
                     // Remember the network handle
                     devHandle = pContainer->socket.devHandle;
                     pContainer->socket.state = U_SOCK_STATE_CLOSED;
+                    // Free any security context associated with the socket
+                    uSecurityTlsRemove(pContainer->socket.pSecurityContext);
+                    pContainer->socket.pSecurityContext = NULL;
+                    pContainer->socket.devHandle = NULL;
                     // Move on
                     pContainer = pContainer->pNext;
                 }
@@ -2471,32 +2501,145 @@ void uSockRegisterCallbackClosed(uSockDescriptor_t descriptor,
 int32_t uSockBind(uSockDescriptor_t descriptor,
                   const uSockAddress_t *pLocalAddress)
 {
-    // TODO
-    (void) descriptor;
-    (void) pLocalAddress;
-    errno = U_SOCK_ENOSYS;
-    return (int32_t) U_ERROR_COMMON_NOT_IMPLEMENTED;
+    int32_t errorCode = (int32_t)U_ERROR_COMMON_NOT_IMPLEMENTED;
+    int32_t errnoLocal;
+    uSockContainer_t *pContainer = NULL;
+    uDeviceHandle_t devHandle;
+    int32_t sockHandle;
+
+    errnoLocal = init();
+    if (errnoLocal == U_SOCK_ENONE) {
+        errnoLocal = U_SOCK_EINVAL;
+        // Check parameters
+        if (pLocalAddress != NULL) {
+            U_PORT_MUTEX_LOCK(gMutexContainer);
+            // Check that the descriptor is at least valid
+            errnoLocal = U_SOCK_EBADF;
+            pContainer = pContainerFindByDescriptor(descriptor);
+            if (pContainer != NULL) {
+                devHandle = pContainer->socket.devHandle;
+                sockHandle = pContainer->socket.sockHandle;
+                errnoLocal = U_SOCK_ENOSYS;
+                int32_t devType = uDeviceGetDeviceType(devHandle);
+                if (devType == (int32_t)U_DEVICE_TYPE_CELL) {
+                    errnoLocal = -uCellSockBind(devHandle,
+                                                sockHandle,
+                                                pLocalAddress);
+                } else if (devType == (int32_t)U_DEVICE_TYPE_SHORT_RANGE) {
+                    errnoLocal = -uWifiSockBind(devHandle,
+                                                sockHandle,
+                                                pLocalAddress);
+                }
+            }
+
+            U_PORT_MUTEX_UNLOCK(gMutexContainer);
+        }
+    }
+
+    if (errnoLocal != U_SOCK_ENONE) {
+        // Write the errno
+        errno = errnoLocal;
+        errorCode = (int32_t)U_ERROR_COMMON_BSD_ERROR;
+    }
+
+    return errorCode;
 }
 
 // Set listening mode.
 int32_t uSockListen(uSockDescriptor_t descriptor, size_t backlog)
 {
-    // TODO
-    (void) descriptor;
-    (void) backlog;
-    errno = U_SOCK_ENOSYS;
-    return (int32_t) U_ERROR_COMMON_NOT_IMPLEMENTED;
+    int32_t errorCode = (int32_t)U_ERROR_COMMON_NOT_IMPLEMENTED;
+    int32_t errnoLocal;
+    uSockContainer_t *pContainer = NULL;
+    uDeviceHandle_t devHandle;
+    int32_t sockHandle;
+
+    errnoLocal = init();
+    if (errnoLocal == U_SOCK_ENONE) {
+        U_PORT_MUTEX_LOCK(gMutexContainer);
+        errnoLocal = U_SOCK_EBADF;
+        pContainer = pContainerFindByDescriptor(descriptor);
+        if (pContainer != NULL) {
+            devHandle = pContainer->socket.devHandle;
+            sockHandle = pContainer->socket.sockHandle;
+            errnoLocal = U_SOCK_ENOSYS;
+            int32_t devType = uDeviceGetDeviceType(devHandle);
+            if (devType == (int32_t)U_DEVICE_TYPE_CELL) {
+                errnoLocal = -uCellSockListen(devHandle,
+                                              sockHandle,
+                                              backlog);
+            } else if (devType == (int32_t)U_DEVICE_TYPE_SHORT_RANGE) {
+                errnoLocal = -uWifiSockListen(devHandle,
+                                              sockHandle,
+                                              backlog);
+            }
+        }
+        U_PORT_MUTEX_UNLOCK(gMutexContainer);
+    }
+
+    if (errnoLocal != U_SOCK_ENONE) {
+        // Write the errno
+        errno = errnoLocal;
+        errorCode = (int32_t)U_ERROR_COMMON_BSD_ERROR;
+    }
+
+    return errorCode;
 }
 
 // Accept an incoming TCP connection on the given socket.
 int32_t uSockAccept(uSockDescriptor_t descriptor,
                     uSockAddress_t *pRemoteAddress)
 {
-    // TODO
     (void) descriptor;
     (void) pRemoteAddress;
     errno = U_SOCK_ENOSYS;
-    return (int32_t) U_ERROR_COMMON_NOT_IMPLEMENTED;
+    uSockContainer_t *pContainer = NULL;
+    uDeviceHandle_t devHandle;
+    int32_t sockHandle;
+    int32_t clientSock = U_ERROR_COMMON_BSD_ERROR;
+    int32_t clientSockHandle = U_ERROR_COMMON_BSD_ERROR;
+
+    if (init() == U_SOCK_ENONE) {
+        // Check parameters
+        if (pRemoteAddress != NULL) {
+            U_PORT_MUTEX_LOCK(gMutexContainer);
+            // Check that the descriptor is at least valid
+            pContainer = pContainerFindByDescriptor(descriptor);
+            U_PORT_MUTEX_UNLOCK(gMutexContainer);
+            if (pContainer != NULL) {
+                devHandle = pContainer->socket.devHandle;
+                sockHandle = pContainer->socket.sockHandle;
+                int32_t devType = uDeviceGetDeviceType(devHandle);
+                if (devType == (int32_t)U_DEVICE_TYPE_CELL) {
+                    clientSockHandle = uCellSockAccept(devHandle,
+                                                       sockHandle,
+                                                       pRemoteAddress);
+                } else if (devType == (int32_t)U_DEVICE_TYPE_SHORT_RANGE) {
+                    clientSockHandle = uWifiSockAccept(devHandle,
+                                                       sockHandle,
+                                                       pRemoteAddress);
+                }
+                if (clientSockHandle >= 0) {
+                    clientSock = uSockCreateEx(devHandle,
+                                               pContainer->socket.type,
+                                               pContainer->socket.protocol,
+                                               clientSockHandle);
+                } else {
+                    clientSock = clientSockHandle;
+                }
+            }
+        }
+    }
+
+    if (clientSock >= 0) {
+        pContainer = pContainerFindByDescriptor(clientSock);
+        pContainer->socket.state = U_SOCK_STATE_CONNECTED;
+        errno = U_SOCK_ENONE;
+    } else {
+        errno = clientSock;
+    }
+
+    return clientSock;
 }
 
 // Select: wait for one of a set of sockets to become unblocked.
@@ -2774,6 +2917,23 @@ char *pUSockDomainRemovePort(char *pDomainString)
     }
 
     return pDomainString;
+}
+
+/* ----------------------------------------------------------------
+ * PUBLIC FUNCTIONS: FOR INTERNAL USE ONLY
+ * -------------------------------------------------------------- */
+
+// Free the mutexes that should never be free'd.
+void uSockFree()
+{
+    if (gMutexContainer != NULL) {
+        uPortMutexDelete(gMutexContainer);
+        gMutexContainer = NULL;
+    }
+    if (gMutexCallbacks != NULL) {
+        uPortMutexDelete(gMutexCallbacks);
+        gMutexCallbacks = NULL;
+    }
 }
 
 // End of file

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,10 +26,14 @@
  * for the module is likely different to that from the MCU: check the
  * data sheet for the module to determine the mapping.
  */
-#include "devicetree.h"
+#include <version.h> // For KERNEL_VERSION_MAJOR
+#if KERNEL_VERSION_NUMBER >= ZEPHYR_VERSION(3,1,0)
+#include <zephyr/devicetree.h>
+#else
+#include <devicetree.h>
+#endif
 #include "u_runner.h"
 #include "u_port_clib_platform_specific.h" // For rand
-#include "version.h" // For KERNEL_VERSION_MAJOR
 
 /** @file
  * @brief Porting layer and configuration items passed in at application
@@ -44,7 +48,6 @@
  */
 #define U_PORT_TEST_ASSERT(condition) U_PORT_UNITY_TEST_ASSERT(condition)
 #define U_PORT_TEST_ASSERT_EQUAL(expected, actual) U_PORT_UNITY_TEST_ASSERT_EQUAL(expected, actual)
-
 
 /** Macro to wrap the definition of a test function and
  * map it to our Unity port.

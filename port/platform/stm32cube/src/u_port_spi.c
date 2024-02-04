@@ -1,5 +1,5 @@
 ﻿/*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,10 +23,11 @@
 #include "stdbool.h"
 #include "string.h"   // memset()
 
-#include "u_error_common.h"
 #include "u_cfg_sw.h"
 #include "u_cfg_hw_platform_specific.h"
+#include "u_compiler.h" // U_ATOMIC_XXX() macros
 
+#include "u_error_common.h"
 #include "u_port.h"
 #include "u_port_os.h"
 #include "u_port_spi.h"
@@ -100,6 +101,10 @@ static SPI_TypeDef *const gpSpiReg[] = {NULL,  // This to avoid having to -1
 /** Storage for the SPI instances.
  */
 static uPortSpiData_t gSpiData[U_PORT_SPI_MAX_NUM + 1]; // +1 to avoid having to -1
+
+/** Variable to keep track of the number of SPI interfaces open.
+ */
+static volatile int32_t gResourceAllocCount = 0;
 
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
@@ -269,7 +274,11 @@ static int32_t initGpio(int32_t spi, int32_t pin, uPortSpiPinType_t pinType)
 
     gpioInitStruct.Pin = (1U << U_PORT_STM32F4_GPIO_PIN(pin));
     gpioInitStruct.Mode = LL_GPIO_MODE_ALTERNATE;
-    gpioInitStruct.Speed = LL_GPIO_SPEED_FREQ_VERY_HIGH;
+    // Note: we used to set the speed to LL_GPIO_SPEED_FREQ_VERY_HIGH
+    // but that seemed to cause significant comms failures; setting
+    // the speed to medium (up to 50 MHz) is more reliable and perfectly
+    // sufficient for what is needed here
+    gpioInitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
     gpioInitStruct.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
     gpioInitStruct.Pull = LL_GPIO_PULL_UP;
     gpioInitStruct.Alternate = getAf(spi, pin, pinType);
@@ -466,7 +475,8 @@ static bool configIsDifferent(int32_t spi,
            (deviceCurrent.mode != pDevice->mode) ||
            (deviceCurrent.wordSizeBytes != pDevice->wordSizeBytes) ||
            (deviceCurrent.lsbFirst != pDevice->lsbFirst) ||
-           fillWordIsDifferent(deviceCurrent.fillWord, pDevice->fillWord,
+           fillWordIsDifferent((uint16_t) deviceCurrent.fillWord,
+                               (uint16_t) pDevice->fillWord,
                                pDevice->wordSizeBytes);
 }
 
@@ -483,6 +493,7 @@ static void closeSpi(uPortSpiData_t *pSpiData)
         // Set the register in the entry to NULL to indicate that it is
         // no longer in use
         pSpiData->pReg = NULL;
+        U_ATOMIC_DECREMENT(&gResourceAllocCount);
     }
 }
 
@@ -579,6 +590,7 @@ int32_t uPortSpiOpen(int32_t spi, int32_t pinMosi, int32_t pinMiso,
                     gSpiData[spi].fillWord = (uint16_t) device.fillWord;
                     // Now we're good to go
                     gSpiData[spi].pReg = pReg;
+                    U_ATOMIC_INCREMENT(&gResourceAllocCount);
                     // Return the SPI HW block number as the handle
                     handleOrErrorCode = spi;
                 } else {
@@ -744,6 +756,12 @@ int32_t uPortSpiControllerSendReceiveBlock(int32_t handle, const char *pSend,
     }
 
     return errorCodeOrReceiveSize;
+}
+
+// Get the number of SPI interfaces currently open.
+int32_t uPortSpiResourceAllocCount()
+{
+    return U_ATOMIC_GET(&gResourceAllocCount);
 }
 
 // End of file

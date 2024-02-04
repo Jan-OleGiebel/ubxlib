@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,7 +49,7 @@ extern "C" {
  */
 typedef struct {
     int32_t uartHandle; /**< The handle returned by uPortUartOpen(). */
-    uAtClientHandle_t atClientHandle; /**< The handle returned by uAtClientAdd(). */
+    uAtClientHandle_t atClientHandle; /**< The handle returned by uAtClientAddExt(). */
     uDeviceHandle_t cellHandle;  /**< The device handle returned by uCellAdd(). */
 } uCellTestPrivate_t;
 

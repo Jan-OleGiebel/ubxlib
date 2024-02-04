@@ -24,7 +24,7 @@ A simple usage example, sending data over a TCP socket, is shown below.  Note th
 //
 // Note that the pin numbers are those of the MCU: if you
 // are using an MCU inside a u-blox module the IO pin numbering
-// for the module is likely different that from the MCU: check
+// for the module is likely different to that of the MCU: check
 // the data sheet for the module to determine the mapping.
 
 // DEVICE i.e. module/chip configuration: in this case a cellular
@@ -49,7 +49,8 @@ static const uDeviceCfg_t gDeviceCfg = {
             .pinTxd = U_CFG_APP_PIN_CELL_TXD,
             .pinRxd = U_CFG_APP_PIN_CELL_RXD,
             .pinCts = U_CFG_APP_PIN_CELL_CTS,
-            .pinRts = U_CFG_APP_PIN_CELL_RTS
+            .pinRts = U_CFG_APP_PIN_CELL_RTS,
+            .pPrefix = NULL // Relevant for Linux only
         },
     },
 };
@@ -124,7 +125,10 @@ int app_start() {
     }
 
     // Close the device
-    uDeviceClose(devHandle, true);
+    if (uDeviceClose(devHandle, true) != 0) {
+        // Device has not responded to power off request, just release resources
+        uDeviceClose(devHandle, false);
+    }
 
     // Tidy up
     uDeviceDeinit();

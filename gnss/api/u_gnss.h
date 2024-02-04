@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,6 +44,15 @@ extern "C" {
 /** The usual I2C address for a u-blox GNSS device.
  */
 # define U_GNSS_I2C_ADDRESS 0x42
+#endif
+
+#ifndef U_GNSS_RETRY_ON_NO_RESPONSE_DELAY_MS
+/** How long to wait between retries of a message exchange
+ * with a GNSS device if there is no response, in milliseconds.
+ * 500 ms should be long enough for the device to wake up if
+ * it was asleep.
+ */
+# define U_GNSS_RETRY_ON_NO_RESPONSE_DELAY_MS 500
 #endif
 
 /* ----------------------------------------------------------------
@@ -111,14 +120,14 @@ int32_t uGnssAdd(uGnssModuleType_t moduleType,
  * #U_GNSS_TRANSPORT_VIRTUAL_SERIAL because the GNSS chip is inside or
  * connected via an intermediate (for example cellular) module then you
  * should call this function to let the GNSS instance know that there
- * is such an intermediate device.  This is because some procedures,
+ * is such an intermediate device.  This is required because some procedures,
  * e.g. powering the GNSS device on or off, need to be done differently
  * when there is an intermediate module.  You do NOT need to call this
  * function (it will return an error) if you are using
- * #U_GNSS_TRANSPORT_AT as the code will already know that there is an
- * intermediate module in that case; likewise, if you are using
- * #U_GNSS_TRANSPORT_VIRTUAL_SERIAL for another reason, no intermediate
- * module is involved, you do not need to call this function.
+ * #U_GNSS_TRANSPORT_AT, as the code will already know that there is an
+ * intermediate module in that case.  Likewise, if you are using
+ * #U_GNSS_TRANSPORT_VIRTUAL_SERIAL for another reason and no
+ * intermediate module is involved, you do not need to call this function.
  *
  * @param gnssHandle          the handle of the GNSS instance.
  * @param intermediateHandle  the handle of the intermediate (e.g. cellular)
@@ -170,6 +179,16 @@ void uGnssRemove(uDeviceHandle_t gnssHandle);
 
 /** Get the type and handle of the transport used by the given
  * GNSS instance.
+ *
+ * Note: where the transport is over AT (i.e. the case where AT+UGUBX
+ * messages are being used to talk to a GNSS chip that is inside or
+ * connected via a GNSS chip, e.g. if U_NETWORK_GNSS_CFG_CELL_USE_AT_ONLY
+ * is defined, or CMUX is not supported, not the normal case) it is
+ * possible for the AT handle to change underneath, so an AT handle
+ * returned by this function will be locked and therefore unusable.
+ * This will occur if a PPP session is opened to the cellular device.
+ * Should a PPP session be opened this function should be called again
+ * to obtain the correct AT handle.
  *
  * @param gnssHandle            the handle of the GNSS instance.
  * @param[out] pTransportType   a place to put the transport type,
@@ -245,7 +264,7 @@ void uGnssSetTimeout(uDeviceHandle_t gnssHandle, int32_t timeoutMs);
  * byte, but how many?  Use this function to get the current setting.
  *
  * @param gnssHandle  the handle of the GNSS instance.
- * @return            the number of 0xFF bytes which constitue fill.
+ * @return            the number of 0xFF bytes which constitute fill.
  */
 int32_t uGnssGetSpiFillThreshold(uDeviceHandle_t gnssHandle);
 
@@ -283,6 +302,41 @@ bool uGnssGetUbxMessagePrint(uDeviceHandle_t gnssHandle);
  *                     switch printing off.
  */
 void uGnssSetUbxMessagePrint(uDeviceHandle_t gnssHandle, bool onNotOff);
+
+/** If the GNSS device does not respond to a message because
+ * it is inactive due to power-saving (see uGnssPwrSetMode())
+ * then retry sending the message this many times, with a gap
+ * of #U_GNSS_RETRY_ON_NO_RESPONSE_DELAY_MS.  If this is not
+ * called no retries are attempted.
+ *
+ * @param gnssHandle  the handle of the GNSS instance.
+ * @param retries     the number of retries.
+ */
+void uGnssSetRetries(uDeviceHandle_t gnssHandle, int32_t retries);
+
+/** Get the number of retries when there is no response from
+ * the GNSS device to a message.
+ *
+ * @param gnssHandle  the handle of the GNSS instance.
+ * @return            on success the number of retries, else negative
+ *                    error code.
+ */
+int32_t uGnssGetRetries(uDeviceHandle_t gnssHandle);
+
+/** Get the internal port number that we are using inside the
+ * GNSS device; this is dictated by the physical transport that
+ * is in use (NOT necessarily the #uGnssTransportType_t as, for
+ * instance, UART interfaces may be delivered as USB and Virtual
+ * Serial ports may be absolutely anything).  It may be useful to
+ * know this port number if you are using the uGnssCfgValXxx()
+ * functions to set or get a value which is dependent upon it
+ * (e.g. the one of the U_GNSS_CFG_VAL_KEY_ID_MSGOUT_XXX key IDs).
+ *
+ * @param gnssHandle  the handle of the GNSS instance.
+ * @return            on success the port number, else negative
+ *                    error code.
+ */
+int32_t uGnssGetPortNumber(uDeviceHandle_t gnssHandle);
 
 #ifdef __cplusplus
 }

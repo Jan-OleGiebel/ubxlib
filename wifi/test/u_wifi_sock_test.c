@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -47,15 +47,17 @@
 #include "u_cfg_sw.h"
 #include "u_cfg_app_platform_specific.h"
 #include "u_cfg_test_platform_specific.h"
-#include "u_cfg_os_platform_specific.h"  // For #define U_CFG_OS_CLIB_LEAKS
+#include "u_cfg_os_platform_specific.h"
 
 #include "u_error_common.h"
 
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"
 #include "u_port_uart.h"
+
+#include "u_test_util_resource_check.h"
 
 #include "u_sock.h"
 
@@ -171,7 +173,12 @@ static uShortRangeUartConfig_t uart = { .uartPort = U_CFG_APP_SHORT_RANGE_UART,
                                         .pinTx = U_CFG_APP_PIN_SHORT_RANGE_TXD,
                                         .pinRx = U_CFG_APP_PIN_SHORT_RANGE_RXD,
                                         .pinCts = U_CFG_APP_PIN_SHORT_RANGE_CTS,
-                                        .pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS
+                                        .pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS,
+#ifdef U_CFG_APP_UART_PREFIX // Relevant for Linux only
+                                        .pPrefix = U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX)
+#else
+                                        .pPrefix = NULL
+#endif
                                       };
 
 /* ----------------------------------------------------------------
@@ -217,10 +224,8 @@ static void closedCallbackUdp(uDeviceHandle_t devHandle, int32_t sockHandle)
 // Callback for socket closed, TCP.
 static void closedCallbackTcp(uDeviceHandle_t devHandle, int32_t sockHandle)
 {
-#if !U_CFG_OS_CLIB_LEAKS
     U_TEST_PRINT_LINE("wifi socket closed devHandle: %d, sockHandle: %d.",
                       devHandle, sockHandle);
-#endif
     if (devHandle != gHandles.devHandle) {
         gCallbackErrorNum = 7;
     } else if (sockHandle != gSockHandleTcp)  {
@@ -269,13 +274,11 @@ static void wifiConnectionCallback(uDeviceHandle_t devHandle,
     (void)disconnectReason;
     (void)pCallbackParameter;
     if (status == U_WIFI_CON_STATUS_CONNECTED) {
-#if !U_CFG_OS_CLIB_LEAKS
         U_TEST_PRINT_LINE("connected Wifi connId: %d, bssid: %s, channel: %d.",
                           connId, pBssid, channel);
-#endif
         gWifiConnected = 1;
     } else {
-#if defined(U_CFG_ENABLE_LOGGING) && !U_CFG_OS_CLIB_LEAKS
+#ifndef U_CFG_ENABLE_LOGGING
         //lint -esym(752, strDisconnectReason)
         static const char strDisconnectReason[6][20] = {
             "Unknown", "Remote Close", "Out of range",
@@ -303,11 +306,9 @@ static void wifiNetworkStatusCallback(uDeviceHandle_t devHandle,
     (void)interfaceType;
     (void)statusMask;
     (void)pCallbackParameter;
-#if !U_CFG_OS_CLIB_LEAKS
     U_TEST_PRINT_LINE("network status IPv4 %s, IPv6 %s.",
                       ((statusMask & U_WIFI_STATUS_MASK_IPV4_UP) > 0) ? "up" : "down",
                       ((statusMask & U_WIFI_STATUS_MASK_IPV6_UP) > 0) ? "up" : "down");
-#endif
 
     gWifiStatusMask = statusMask;
 }
@@ -388,7 +389,7 @@ static void disconnectWifi()
 
 U_PORT_TEST_FUNCTION("[wifiSock]", "wifiSockTCPTest")
 {
-    int32_t heapUsed;
+    int32_t resourceCount;
     char *pBuffer;
     int32_t returnCode;
 
@@ -400,8 +401,8 @@ U_PORT_TEST_FUNCTION("[wifiSock]", "wifiSockTCPTest")
     // out of our sums.
     rand();
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Get the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     gWifiStatusMask = 0;
     gWifiConnected = 0;
@@ -455,7 +456,6 @@ U_PORT_TEST_FUNCTION("[wifiSock]", "wifiSockTCPTest")
                                               &localAddress);
         TEST_CHECK_TRUE(returnCode == 0);
     }
-
 
     //lint -esym(645, remoteAddress) 'remoteAddress' may not have been initialized
     uSockAddress_t remoteAddress;
@@ -600,25 +600,16 @@ U_PORT_TEST_FUNCTION("[wifiSock]", "wifiSockTCPTest")
     U_PORT_TEST_ASSERT_EQUAL(gCallbackErrorNum, 0);
     U_PORT_TEST_ASSERT(gClosedCallbackCalledTcp);
 
-#ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'ed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
-#else
-    (void) heapUsed;
-#endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 U_PORT_TEST_FUNCTION("[wifiSock]", "wifiSockUDPTest")
 {
-    int32_t heapUsed;
+    int32_t resourceCount;
     char *pBuffer;
     int32_t returnCode;
 
@@ -630,8 +621,8 @@ U_PORT_TEST_FUNCTION("[wifiSock]", "wifiSockUDPTest")
     // out of our sums.
     rand();
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Get the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     gWifiStatusMask = 0;
     gWifiConnected = 0;
@@ -787,24 +778,24 @@ U_PORT_TEST_FUNCTION("[wifiSock]", "wifiSockUDPTest")
     U_PORT_TEST_ASSERT(gClosedCallbackCalledUdp);
     U_PORT_TEST_ASSERT(gAsyncClosedCallbackCalledUdp);
 
-#ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'ed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
-#else
-    (void) heapUsed;
-#endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
+/** Clean-up to be run at the end of this round of tests, just
+ * in case there were test failures which would have resulted
+ * in the deinitialisation being skipped.
+ */
+U_PORT_TEST_FUNCTION("[wifi]", "wifiSockCleanUp")
+{
+    uWifiTestPrivateCleanup(&gHandles);
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+}
 
 #endif // U_SHORT_RANGE_TEST_WIFI()
-
 
 // End of file

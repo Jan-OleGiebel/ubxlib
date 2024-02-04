@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,6 +28,16 @@
 
 /** @file
  * @brief Common stuff for porting layer.  These functions are thread-safe.
+ *
+ * Note: aside from calling uPortInit() at start of day, uPortDeinit() at
+ * end of day, and uPortFree() if you are freeing some memory that ubxlib
+ * has allocated, this API is NOT INTENDED FOR CUSTOMER USE.  You may use
+ * it if you wish but it is quite restricted and is intended _only_ to
+ * provide what ubxlib needs in the form that ubxlib needs it, internally
+ * for ubxlib.  It is used in the ubxlib examples but that is only because
+ * we need those examples to work on all of our supported platforms.  When
+ * writing your application you are better off using the fully-featured
+ * native APIs of your platform.
  */
 
 #ifdef __cplusplus
@@ -172,7 +182,11 @@ int32_t uPortGetHeapFree();
  *
  * It is NOT a requirement that this API is implemented:
  * where it is not implemented #U_ERROR_COMMON_NOT_IMPLEMENTED
- * should be returned.
+ * should be returned.  However, note that some features
+ * (e.g. cellular power saving, which uses
+ * uAtClientSetWakeUpHandler(), which uses this critical section
+ * function) will not work if uPortEnterCritical() is not
+ * implemented.
  *
  * @return zero on success else negative error code.
  */

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,6 +34,7 @@
 #include "string.h"    // memset()/memcpy()
 
 #include "u_error_common.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 
 #include "u_interface.h"

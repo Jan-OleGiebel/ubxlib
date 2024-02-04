@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,13 +35,13 @@
 #ifndef U_HTTP_CLIENT_TEST_SERVER_DOMAIN_NAME
 /** The domain name of the HTTP test server.
  */
-# define U_HTTP_CLIENT_TEST_SERVER_DOMAIN_NAME  "ubxlib.redirectme.net"
+# define U_HTTP_CLIENT_TEST_SERVER_DOMAIN_NAME  "ubxlib.com"
 #endif
 
 #ifndef U_HTTP_CLIENT_TEST_SERVER_IP_ADDRESS
 /** The HTTP test server as an IP address.
  */
-# define U_HTTP_CLIENT_TEST_SERVER_IP_ADDRESS  "159.65.52.65"
+# define U_HTTP_CLIENT_TEST_SERVER_IP_ADDRESS  "18.133.144.142"
 #endif
 
 #ifndef U_HTTP_CLIENT_TEST_SERVER_PORT

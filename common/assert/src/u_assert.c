@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,14 +52,14 @@
 
 /** The assert failed hook.
  */
-static upAssertFailed_t *gpAssertFailed = NULL;
+static uAssertFailed_t *gpAssertFailed = NULL;
 
 /* ----------------------------------------------------------------
  * PUBLIC FUNCTIONS
  * -------------------------------------------------------------- */
 
 // Register an assertFailed() function.
-void uAssertHookSet(upAssertFailed_t *pAssertFailed)
+void uAssertHookSet(uAssertFailed_t *pAssertFailed)
 {
     gpAssertFailed = pAssertFailed;
 }
@@ -69,11 +69,15 @@ U_WEAK void uAssertFailed(const char *pFileStr, int32_t line)
 {
     if (gpAssertFailed != NULL) {
         gpAssertFailed(pFileStr, line);
+#ifndef U_ASSERT_HOOK_FUNCTION_TEST_RETURN
+        // Enter infinite loop
+        for (;;) {}
+#endif
     } else {
         uPortLog("*** ASSERT FAILURE at %s:%d ***\n", pFileStr, line);
+        // Enter infinite loop
+        for (;;) {}
     }
-    // Enter infinite loop
-    for (;;) {}
 }
 
 // End of file

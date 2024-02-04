@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@
  * @brief Test for the ringbuffer API
  */
 
-
 #ifdef U_CFG_OVERRIDE
 # include "u_cfg_override.h" // For a customer's configuration override
 #endif
@@ -43,6 +42,8 @@
 #include "u_port.h"
 #include "u_port_debug.h"
 #include "u_port_os.h"
+
+#include "u_test_util_resource_check.h"
 
 #include "u_ringbuffer.h"
 
@@ -113,7 +114,7 @@ static void printBuffer(const char *pTitle, const char *pStr, size_t length)
 
 U_PORT_TEST_FUNCTION("[ringbuffer]", "ringbufferBasic")
 {
-    int32_t heapUsed;
+    int32_t resourceCount;
     uRingBuffer_t ringBuffer = {0};
     char linearBuffer[U_TEST_UTILS_RINGBUFFER_SIZE + 1];
     char bufferOut[U_TEST_UTILS_RINGBUFFER_SIZE + 1];
@@ -130,7 +131,7 @@ U_PORT_TEST_FUNCTION("[ringbuffer]", "ringbufferBasic")
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_TEST_PRINT_LINE("testing ring buffer.");
     for (size_t x = 0; x < sizeof(bufferIn); x++) {
@@ -874,12 +875,11 @@ U_PORT_TEST_FUNCTION("[ringbuffer]", "ringbufferBasic")
     U_TEST_PRINT_LINE("deleting ring buffer...");
     uRingBufferDelete(&ringBuffer);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT((heapUsed == 0) || (heapUsed == (int32_t)U_ERROR_COMMON_NOT_SUPPORTED));
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 // End of file

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,9 +46,9 @@
                                               before the other port files if
                                               any print or scan function is used. */
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"
 #include "u_port_event_queue.h"
 
 #include "u_at_client.h"
@@ -101,7 +101,7 @@
 /** The stack size for the task in which an asynchronous callback
  * will run; shouldn't need much.
  */
-# define U_CELL_HTTP_CALLBACK_TASK_STACK_SIZE_BYTES 2304
+# define U_CELL_HTTP_CALLBACK_TASK_STACK_SIZE_BYTES 2560
 #endif
 
 #ifndef U_CELL_HTTP_CALLBACK_TASK_PRIORITY
@@ -208,12 +208,16 @@ static void entryFunction(uDeviceHandle_t cellHandle,
 
         pCellInstance = pUCellPrivateGetInstance(cellHandle);
         if (pCellInstance != NULL) {
-            errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
-            if (ppHttpInstance != NULL) {
-                errorCode = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
-                *ppHttpInstance = pFindHttpInstance(pCellInstance, httpHandle);
-                if (*ppHttpInstance != NULL) {
-                    errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+            errorCode = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
+            if (U_CELL_PRIVATE_HAS(pCellInstance->pModule,
+                                   U_CELL_PRIVATE_FEATURE_HTTP)) {
+                errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+                if (ppHttpInstance != NULL) {
+                    errorCode = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
+                    *ppHttpInstance = pFindHttpInstance(pCellInstance, httpHandle);
+                    if (*ppHttpInstance != NULL) {
+                        errorCode = (int32_t) U_ERROR_COMMON_SUCCESS;
+                    }
                 }
             }
         }
@@ -403,6 +407,7 @@ static void UUHTTPCR_urc(uAtClientHandle_t atHandle, void *pParameter)
         if (pHttpInstance != NULL) {
             pCallback = (uCellHttpCallbackParameters_t *) pUPortMalloc(sizeof(*pCallback));
             if (pCallback != NULL) {
+                memset(pCallback, 0, sizeof(*pCallback)); // Keep Valgrind happy
                 // Note: eventQueueCallback() will free() pFileNameResponse.
                 //lint -esym(429, pFileNameResponse) Suppress pFileNameResponse not being free()ed here
                 //lint -esym(593, pFileNameResponse) Suppress pFileNameResponse not being free()ed here
@@ -471,7 +476,7 @@ int32_t uCellHttpOpen(uDeviceHandle_t cellHandle, const char *pServerName,
         errorCodeOrHandle = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
         if ((pServerName != NULL) && (strlen(pServerName) <= U_CELL_HTTP_SERVER_NAME_MAX_LEN_BYTES) &&
             ((pUserName != NULL) || (pPassword == NULL)) &&
-            (timeoutSeconds >= 0) && (pCallback != NULL)) {
+            (timeoutSeconds > 0) && (pCallback != NULL)) {
             errorCodeOrHandle = (int32_t) U_ERROR_COMMON_NO_MEMORY;
             pHttpContext = pCellInstance->pHttpContext;
             if (pHttpContext == NULL) {
@@ -561,7 +566,7 @@ int32_t uCellHttpOpen(uDeviceHandle_t cellHandle, const char *pServerName,
                                     // and then remove it from the string
                                     y = uSockDomainGetPort(pServerNameTmp);
                                     if (y >= 0) {
-                                        address.port = y;
+                                        address.port = (uint16_t) y;
                                     }
                                     pTmp = pUSockDomainRemovePort(pServerNameTmp);
                                     // Set the domain name address

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,13 +41,17 @@ extern "C" {
  * TYPES
  * -------------------------------------------------------------- */
 
+/** The transport handle for #uDeviceGnssInstance_t.
+ */
+typedef union {
+    int32_t int32Handle;
+    uDeviceSerial_t *pDeviceSerial;
+} uDeviceGnssTransportHandle_t;
+
 /** The things we need to remember per GNSS device.
  */
 typedef struct {
-    union {
-        int32_t int32Handle;
-        uDeviceSerial_t *pDeviceSerial;
-    } transportHandle;
+    uDeviceGnssTransportHandle_t transportHandle;
     uDeviceTransportType_t deviceTransportType;
 } uDeviceGnssInstance_t;
 

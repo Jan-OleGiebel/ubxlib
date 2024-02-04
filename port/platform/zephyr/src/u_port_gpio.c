@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,10 +31,17 @@
 #include "u_port_os.h"      // Needed by u_port_private.h
 #include "u_port_gpio.h"
 
-#include "kernel.h"
-#include "device.h"
-#include "drivers/gpio.h"
-#include "version.h"
+#include <version.h>
+
+#if KERNEL_VERSION_NUMBER >= ZEPHYR_VERSION(3,1,0)
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
+#else
+#include <kernel.h>
+#include <device.h>
+#include <drivers/gpio.h>
+#endif
 
 #include "u_port_private.h"  // Down here because it needs to know about the Zephyr device tree
 
@@ -95,7 +102,6 @@ int32_t uPortGpioConfig(uPortGpioConfig_t *pConfig)
             }
             break;
         }
-
 
         case U_PORT_GPIO_DIRECTION_INPUT_OUTPUT:
         case U_PORT_GPIO_DIRECTION_OUTPUT: {
@@ -194,4 +200,3 @@ int32_t uPortGpioGet(int32_t pin)
 }
 
 // End of file
-

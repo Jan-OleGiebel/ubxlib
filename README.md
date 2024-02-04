@@ -2,6 +2,9 @@
 
 [![important message](/readme_images/important_msg.svg)](/UPCOMING.md)
 
+<i>Note: if you are reading this from a package-file created by a third-party \[e.g. PlatformIO\] and the links do not work, please try reading it at the original [ubxlib Github site](https://github.com/u-blox/ubxlib) instead.</i><br /><br />
+<b>IMPORTANT: [port/platform/arduino](/port/platform/arduino) and [port/platform/nrf5sdk](/port/platform/nrf5sdk) are NOW DEPRECATED and will be REMOVED at release 1.5, likely mid 2024: if you wish to continue to use `ubxlib` with Arduino, please consider moving to the [PlatformIO IDE](/port/platform/platformio); we will continue to support nRF52/nRF53 through what is now the Nordic standard [nRF Connect SDK (i.e. Zephyr 3)](/port/platform/zephyr).</b>
+
 # Introduction to `ubxlib`
 This repository contains an add-on to microcontroller and RTOS SDKs for building embedded applications with u-blox products and services. It provides portable C libraries which expose APIs with examples. `ubxlib` supports [u-blox](https://www.u-blox.com) modules with [cellular](https://www.u-blox.com/en/cellular-modules) (2G/3G/4G), [short-range](https://www.u-blox.com/en/short-range-radio-chips-and-modules) (Bluetooth and Wi-Fi) and [positioning](https://www.u-blox.com/en/positioning-chips-and-modules) (GNSS) functionality. The `ubxlib` libraries present high level C APIs for use in customer applications (e.g. connect to a network, open a TCP socket, establish location, etc.) and implements these APIs on selected popular MCUs, also available inside u-blox modules.
 
@@ -26,6 +29,7 @@ The key APIs provided by this repo, and their relationships with each other, are
 - If you wish to contact an MQTT broker over that network, use the common [mqtt_client](/common/mqtt_client) API.
 - If you wish to use HTTP, use the common [http_client](/common/http_client) API.
 - If you wish to get a location fix use the common [location](/common/location) API.
+- If you wish to build a geofence that can be used with [gnss](/gnss), [wifi](/wifi) and [cellular](/cell), see the common [geofence](/common/geofence) API.
 - If you wish to take finer control of [cellular](/cell), [ble](/ble), [wifi](/wifi) or [gnss](/gnss), use the respective control API directly.
 - GNSS may be used via the [gnss](/gnss) API.
 - The BLE and Wi-Fi APIs are internally common within u-blox and so they both use the common [short_range](/common/short_range) API.
@@ -38,13 +42,17 @@ All APIs are documented with Doxygen compatible comments: simply download the la
 # Supported `ubxlib` host platforms and APIs
 Hosts run `ubxlib` and interact with an attached periperal. A host platform contains an MCU, toolchain and RTOS/SDK as listed in the table below. Hosts are typically u-blox open CPU (standalone) modules or other MCUs. To use a host you need a development board or an EVK. Currently `ubxlib` supports and tests the following purchasable boards out-of-the box.
 
+- [u-blox XPLR-IOT-1](https://www.u-blox.com/en/product/xplr-iot-1)
+- [u-blox XPLR-HPG-1](https://www.u-blox.com/en/product/xplr-hpg-1)
+- [u-blox XPLR-HPG-2](https://www.u-blox.com/en/product/xplr-hpg-2)
 - [u-blox C030-U201 board](https://www.u-blox.com/en/product/c030-application-board)
+- [u-blox NINA-W1 EVK](https://www.u-blox.com/en/product/evk-nina-w10)
 - [Nordic nRF52840 DK board](https://www.nordicsemi.com/Products/Development-hardware/nrf52840-dk)
 - [Nordic nRF5340 DK board](https://www.nordicsemi.com/Products/Development-hardware/nRF5340-DK)
 - [STM32F4 Discovery board](https://www.st.com/en/evaluation-tools/stm32f4discovery.html)
 - [ESP32-DevKitC](https://www.espressif.com/en/products/devkits/esp32-devkitc/overview)
-- [u-blox NINA-W1 EVK](https://www.u-blox.com/en/product/evk-nina-w10)
-- [u-blox XPLR-IOT-1](https://www.u-blox.com/en/product/xplr-iot-1)
+
+
 
 If your MCU is on the list but your board is not:
 - just set the HW pins in the source file of the example to match how your MCU is wired to the u-blox peripheral.
@@ -53,25 +61,26 @@ If your MCU is not on the list:
 - if you are using [PlatformIO](https://platformio.org/) and [Zephyr](https://www.zephyrproject.org/) then any MCU that Zephyr supports should work with `ubxlib`, just follow the instructions [here](/port/platform/platformio) to bring `ubxlib` into your existing [PlatformIO](https://platformio.org/) environment,
 - otherwise, to port `ubxlib` to a new host platform follow the [DIY instructions](/port#diy) for the port API.
 
-|`ubxlib` hosts |NINA-W10|NINA-B40 series<br />NINA-B30 series<br />NINA-B1 series<br />ANNA-B1 series<br />|NORA-B1 series|C030 board|PC<sup>*</sup>|PC<sup>*</sup>|
+|`ubxlib` hosts |NINA-W10|NINA-B40 series<br />NINA-B30 series<br />NINA-B1 series<br />ANNA-B1 series<br />|NORA-B1 series|C030 board|PC|PC|
 |-----------|-----------|--------------|-----|-----|------|------|
-|**MCU**|Espressif ESP32|Nordic nRF52|Nordic nRF53|ST-Micro STM32F4|x86 (win32)|x86 (32-bit Linux)|
-|**Toolchain**|ESP-IDF<br />Arduino-ESP32|GCC<br />nRF Connect|nRF Connect|Cube|MSVC|Zephyr|
-|**RTOS/SDK**|FreeRTOS|FreeRTOS<br />Zephyr|Zephyr|FreeRTOS|Windows|Zephyr|
-|**APIs provided by host with peripheral attached<sup>**</sup>**|[wifi](/wifi)<br />[ble](/ble "ble API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />[sock](/common/sock "sock API")|[ble](/ble "ble API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")|[ble](/ble "ble API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />| [cell](/cell "cell API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />[sock](/common/sock "sock API")<br />[location<sup>***</sup>](/common/location "location API")<br />[TLS&nbsp;security](/common/security "security API")<br>| N/A | N/A |
+|**MCU**|Espressif ESP32|Nordic nRF52|Nordic nRF53|ST-Micro STM32F4|x86/64 (Linux)|x86 (Win32)<sup>1</sup>|
+|**Toolchain**|ESP-IDF<br />Arduino-ESP32|GCC<br />nRF Connect|nRF Connect|Cube|GCC|MSVC|
+|**RTOS/SDK**|FreeRTOS|FreeRTOS<br />Zephyr|Zephyr|FreeRTOS|Posix|Windows|
+|**APIs provided by host with peripheral attached<sup>2</sup>**|[wifi](/wifi)<br />[ble](/ble "ble API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />[sock](/common/sock "sock API")|[ble](/ble "ble API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")|[ble](/ble "ble API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />| [cell](/cell "cell API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />[sock](/common/sock "sock API")<br />[location<sup>3</sup>](/common/location "location API")<br />[TLS&nbsp;security](/common/security "security API")<br>| N/A | N/A |
 
-<sup>* For development/test purposes only.</sup></br>
-<sup>** Only SPS API provided for native (on-chip) BLE interface, other APIs for native (on-chip) access, e.g. WiFi support, are a work in progress.</sup>
+<sup>1: For development/test purposes only.</sup></br>
+<sup>2: Only SPS API provided for native (on-chip) BLE interface, other APIs for native (on-chip) access, e.g. WiFi support, are a work in progress.</sup>
 
 # Supported modules as `ubxlib` peripherals and APIs
 Peripherals are u-blox modules which accept commands (e.g. AT-commands) over a serial interface and have no open MCU environment. To run the APIs they need to be attached to a host which runs `ubxlib`. For example in the [test farm](/port/platform/common/automation/DATABASE.md) combinations of hosts and peripherals are listed.
 
-|`ubxlib` peripherals |NINA-B41 series<br />NINA-B31 series<br />NINA-B1 series<br />ANNA-B1|NINA-W13|NINA-W15|SARA-U2 series|SARA-R4 series<br />SARA-R5 series<br />LARA-R6 series<br />|SARA-R510M8S<br />SARA-R422M8S|M8/M9/M10 series|
-|-----------|-----------|--------------|-----|-----|------|------|------|
-|**APIs provided by host with peripheral attached**|[ble](/ble "ble API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")|[wifi](/wifi)<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />[sock](/common/sock "sock API")<br />[TLS&nbsp;security](/common/security "security API")<br />[mqtt_client](/common/mqtt_client "MQTT client API")|[wifi](/wifi)<br />[ble](/ble "ble API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />[sock](/common/sock "sock API")<br />[TLS&nbsp;security](/common/security "security API")<br />[mqtt_client](/common/mqtt_client "MQTT client API")|[cell](/cell "cell API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />[sock](/common/sock "sock API")<br />[location*](/common/location "location API")<br />[TLS&nbsp;security](/common/security "security API")<br />[http_client](/common/http_client "HTTP client API")|[cell](/cell "cell API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />[sock](/common/sock "sock API")<br />[location<sup>***</sup>](/common/location "location API")<br />[security](/common/security "security API")<br />[mqtt_client](/common/mqtt_client "MQTT client API")<br />[http_client](/common/httpt_client "HTTP client API")|All APIs of<br />SARA-R4,<br />SARA-R5 series&nbsp;+<br />[gnss](/gnss "GNSS API")<br />[location](/common/location "location API")|[gnss](/gnss "GNSS API")<br />[location](/common/location "location API")|
+|`ubxlib` peripherals |NINA-B41 series<br />NINA-B31 series<br />NINA-B1 series<br />ANNA-B1|NINA-W13|NINA-W15<br /><nobr>NORA-W36<sup>4</sup></nobr>|SARA-U2 series|LENA-R8 series|SARA-R4 series<br />SARA-R5 series<br />LARA-R6 series<br />|SARA-R510M8S<br />SARA-R422M8S|M8/M9/M10 series|
+|-----------|-----------|--------------|-----|-----|-----|------|------|------|
+|**APIs provided by host with peripheral attached**|[ble](/ble "ble API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")|[wifi](/wifi)<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />[sock](/common/sock "sock API")<br />[TLS&nbsp;security](/common/security "security API")<br />[mqtt_client](/common/mqtt_client "MQTT client API")<br />[http_client](/common/http_client "HTTP client API")|[wifi](/wifi)<br />[ble](/ble "ble API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />[sock](/common/sock "sock API")<br />[TLS&nbsp;security](/common/security "security API")<br />[mqtt_client](/common/mqtt_client "MQTT client API")<br />[http_client](/common/http_client "HTTP client API")|[cell](/cell "cell API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />[sock](/common/sock "sock API")<br />[location<sup>3</sup>](/common/location "location API")<br />[TLS&nbsp;security](/common/security "security API")<br />[http_client](/common/http_client "HTTP client API")|[cell](/cell "cell API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />[sock](/common/sock "sock API")<br />[location<sup>3</sup>](/common/location "location API")<br />[TLS&nbsp;security](/common/security "security API")<br />[mqtt_client](/common/mqtt_client "MQTT client API")|[cell](/cell "cell API")<br />[device](/common/device "device API")<br />[network](/common/network "network API")<br />[sock](/common/sock "sock API")<br />[location<sup>3</sup>](/common/location "location API")<br />[security](/common/security "security API")<br />[mqtt_client](/common/mqtt_client "MQTT client API")<br />[http_client](/common/http_client "HTTP client API")|All APIs of<br />SARA-R4,<br />SARA-R5 series&nbsp;+<br />[gnss](/gnss "GNSS API")<br />[location](/common/location "location API")|[gnss](/gnss "GNSS API")<br />[location](/common/location "location API")|
 
 
-<sup>*** Through the u-blox [CellLocate](https://www.u-blox.com/en/product/celllocate) mobile network-based location service.</sup>
+<sup>3: Through the u-blox [CellLocate](https://www.u-blox.com/en/product/celllocate) mobile network-based location service.</sup><br />
+<sup>4: Beta support: please **add** `short_range_gen2` to the `UBXLIB_FEATURES` variable in your `make` or `CMake` file when building `ubxlib` for NORA-W36; NORA-W36 comes with a second generation u-connectExpress, please see the release notes for NORA-W36 for the supported features.</sup>
 
 # Structure of `ubxlib`
 The APIs for each type of u-blox module can be found in the relevant directory (e.g. [cell](/cell) for cellular modules and [ble](/ble)/[wifi](/wifi) for BLE/Wi-Fi modules).  The [common](/common) directory contains APIs and 'helper' modules that are shared by u-blox modules, most importantly the [device](/common/device) API, the [network](/common/network) API and the [sockets](/common/sockets) API.  All APIs are documented in the API header files.
@@ -101,6 +110,7 @@ In order for u-blox to support multiple platforms with this code there is also a
 ¦   +---short_range            <-- internal API used by the BLE and Wi-Fi APIs (see below)
 ¦   +---at_client              <-- internal API used by the BLE, cell and Wi-Fi APIs
 ¦   +---ubx_protocol           <-- internal API used by the GNSS API
+¦   +---geofence               <-- common geofence API that can be used with GNSS, cellular and Wi-Fi-based positioning
 ¦   +---spartn                 <-- message validation utilities for SPARTN
 ¦   +---error                  <-- u_error_common.h: error codes common across APIs
 ¦   +---assert                 <-- assert hook
@@ -132,7 +142,7 @@ In order for u-blox to support multiple platforms with this code there is also a
 There are a few possible approaches to adopting `ubxlib`.  If you do not have a fixed environment (MCU, toolchain, RTOS, etc.) then the first two options offer an easy start; if you are constrained in how you must work (i.e. you must use a particular MCU or toolchain or RTOS), or you are happy to dive into the detail from the outset, then the third way is for you.
 
 ## The Easy Way 1: XPLR IoT
-If you would like to explore cellular, positioning, Wifi and BLE, along with a suite of sensors, all at once, you might consider purchasing a u-blox [XPLR-IOT-1 platform](https://www.u-blox.com/en/product/xplr-iot-1) and using the associated [ubxlib examples repo](https://github.com/u-blox/ubxlib_examples_xplr_iot), which allows you to install, build and run [Zephyr](https://www.zephyrproject.org/)-based applications.
+If you would like to explore cellular, positioning, Wi-Fi and BLE, along with a suite of sensors, all at once, you might consider purchasing a u-blox [XPLR-IOT-1 platform](https://www.u-blox.com/en/product/xplr-iot-1) and using the associated [ubxlib examples repo](https://github.com/u-blox/ubxlib_examples_xplr_iot), which allows you to install, build and run [Zephyr](https://www.zephyrproject.org/)-based applications.
 
 ## The Easy Way 2: PlatformIO
 `ubxlib` is supported as a [PlatformIO](https://platformio.org/) library; if you have a board that either (a) runs [Zephyr](https://www.zephyrproject.org/) or (b) contains an ESP32 chip (running [ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/index.html) or [Arduino](https://www.arduino.cc/)), then just follow the instructions [here](/port/platform/platformio) to load `ubxlib` directly into the [PlatformIO](https://platformio.org/) Visual Studio Code-based IDE.
@@ -154,21 +164,24 @@ Configuration information for the examples and the tests can be found in the `cf
 A number of examples are provided with this repo:
 
 |  Technology  | Example |
-|--------------|----------|
+|--------------|---------|
 | Cellular     | The [sockets](/example/sockets "socket example") example brings up a TCP/UDP socket by using the [device](/common/device "device API"), [network](/common/network "network API") and [sock](/common/sock "sock API") APIs.  |
-| Cellular     | The [end-to-end security](/example/security/e2e "E2E example") example using the [security](/common/security "security API") API. |
-| Cellular     | The [PSK generation](/example/security/psk "PSK example") example using the [security](/common/security "security API") API. |
-| Cellular     | The [chip-to-chip security](/example/security/c2c "C2C example") example using the [security](/common/security "security API") API. |
 | Cellular     | A [TLS-secured version](/example/sockets "TLS sockets example") of the sockets example. |
+| Cellular     | A [DTLS-secured version](/example/sockets "DTLS sockets example") of the sockets example. |
+| Cellular     | A [PPP version](/example/sockets "PPP sockets example") of the sockets example that shows how the platform IP stack/applications can use a cellular connection. |
 | Cellular     | An [MQTT/MQTT-SN client](/example/mqtt_client "MQTT/MQTT-SN example") using the [MQTT/MQTT-SN client](/common/mqtt_client "MQTT/MQTT-SN client API") API.|
 | Cellular     | An [HTTP client](/example/http_client "HTTP example") using the [HTTP client](/common/http_client "HTTP client API") API.|
 | Cellular     | [CellLocate](/example/location "CellLocate example") example.|
+| Cellular     | The [PSK generation](/example/security/psk "PSK example") example using the [security](/common/security "security API") API. |
 | Bluetooth    | See the BLE examples in the [XPLR-IOT-1 ubxlib examples repo](https://github.com/u-blox/ubxlib_examples_xplr_iot/tree/master/examples). |
 | Wi-Fi        | The [sockets](/example/sockets "sockets example") example brings up a TCP/UDP socket by using the [device](/common/device "device API"), [network](/common/network "network API") and [sock](/common/sock "sock API") APIs.  |
 | GNSS         | [location](/example/location "location example") example using a GNSS chip connected directly or via a cellular module.|
 | GNSS         | [cfg_val](/example/gnss "CFGVALXXX example") example configuring an M9 or later GNSS chip with CFGVALXXX messages.|
 | GNSS         | [message](/example/gnss "message example") example communicating directly with a GNSS chip, messages of your choice.|
+| GNSS         | [decode](/example/gnss "decode example") example decoding messages of your choice, not otherwise provided by `ubxlib`, from a GNSS chip.|
 | GNSS         | [position](/example/gnss "position example") example obtaining streamed position directly from a GNSS chip.|
+| GNSS         | [AssistNow](/example/gnss "AssistNow example") example of how to use the u-blox AssistNow service to improve the time to first fix of GNSS.|
+| GNSS         | [geofence](/example/gnss "geofence example") example of how to use the comon [geofence](/common/geofence "geofence API") API with GNSS; note that it can equally be used with cellular (CellLocate) and Wi-Fi (Google, SkyHook and Here).|
 
 You may use the code from any of these examples as a basis for your work as follows:
 - Copy the source files for the [example](/example) that is closest to your intended application to your project directory.
@@ -184,6 +197,23 @@ You may use the code from any of these examples as a basis for your work as foll
 
 General information about how to integrate `ubxlib` into a build system is available in the [port directory](/port) and platform specific information is available in the [platform specific port directory](/port/platform) for your chosen MCU.
 
+
+
+# Where is `ubxlib` used?
+
+The following table showcases repositories which build applications and use `ubxlib`.
+
+| Description | Code repository | Radio Technology | Modules used | Boards used |
+|-------------|--------------------|------------------|------------|-------|
+| **BLE examples** such as: scanning, Serial Port Service (SPS), beacon, angle-of-arrival (AoA). | [https://github.com/u-blox/ubxlib_examples_xplr_iot](https://github.com/u-blox/ubxlib_examples_xplr_iot) | BLE | NORA-B1 | [XPLR-IOT-1](https://www.u-blox.com/en/product/XPLR-IOT-1) |
+| **Cellular tracker** which publishes cellular signal strength parameters and location to an MQTT broker. | [https://github.com/u-blox/ubxlib_cellular_applications_xplr_iot](https://github.com/u-blox/ubxlib_cellular_applications_xplr_iot/releases/tag/v1.0) | LTE Cat-M1, GNSS | SARA-R5, MAX-M10 | [XPLR-IOT-1](https://www.u-blox.com/en/product/XPLR-IOT-1) |
+| **Location example** to get location using both [CellLocate](https://www.u-blox.com/en/product/celllocate) and [CloudLocate](https://www.u-blox.com/en/product/cloudlocate). Calculates location based on cellular, Wi-Fi or GNSS information. | [https://github.com/u-blox/XPLR-IOT-1-location-example](https://github.com/u-blox/XPLR-IOT-1-location-example) | LTE Cat-M1, WiFi, BLE | NINA-W1, SARA-R5, MAX-M10 | [XPLR-IOT-1](https://www.u-blox.com/en/product/XPLR-IOT-1) |
+| **High precision GNSS (HPG)** solution for evaluation and prototyping with the [PointPerfect](https://www.u-blox.com/en/product/pointperfect) GNSS augmentation service. | [https://github.com/u-blox/XPLR-HPG-software](https://github.com/u-blox/XPLR-HPG-software) | GNSS, WiFi, LTE Cat-1 |ZED-F9, NEO-D9, NINA-W1, NORA-W1, LARA-R6 | [XPLR-HPG-1](https://www.u-blox.com/en/product/xplr-hpg-1), [XPLR-HPG-2](https://www.u-blox.com/en/product/xplr-hpg-2) |
+| **Sensor aggregation**. Collect data from sensors and send it to the Thingstream platform using either Wi-Fi or Cellular Network connections. | [https://github.com/u-blox/XPLR-IOT-1-software](https://github.com/u-blox/XPLR-IOT-1-software) | WiFi, LTE Cat-M1 | NINA-W1, SARA-R5 | [XPLR-IOT-1](https://www.u-blox.com/en/product/XPLR-IOT-1) |
+| **Air Quality Monitor** with Sensirion Sensor showing how sensor data be sent to the [Thingstream](https://www.u-blox.com/en/product/thingstream) platform via MQTT, and then visualized in a Node-RED dashboard. | [https://github.com/u-blox/XPLR-IOT-1-Air-Quality-Monitor-Example](https://github.com/u-blox/XPLR-IOT-1-Air-Quality-Monitor-Example) | BLE | NORA-B1 | [XPLR-IOT-1](https://www.u-blox.com/en/product/XPLR-IOT-1), [MikroE HVAC](https://www.mikroe.com/hvac-click) |
+
+
+
 # Feature Request and Roadmap
 New features can be requested and up-voted [here](https://github.com/u-blox/ubxlib/issues/12). The comments of this issue also contains an outlook about features of upcoming releases. Also it is the right place to discuss features and their priority.
 
@@ -191,7 +221,6 @@ New features can be requested and up-voted [here](https://github.com/u-blox/ubxl
 The software in this repository is Apache 2.0 licensed and copyright u-blox with the following exceptions:
 
 - The heap management code (`heap_useNewlib.c`), required because the [nRF5 SDK](/port/platform/nrf5sdk) and [STM32Cube](/port/platform/stm32cube) platforms don't provide the necessary memory management for [newlib](https://sourceware.org/newlib/libc.html) and [FreeRTOS](https://www.freertos.org) to play together, is copyright Dave Nadler.
-- The `mbedtls_platform_zeroize()` function in [mbedtls_platform_zeroize.c](/port/platform/nrf5sdk/src/mbedtls_platform_zeroize.c) is copied from the Apache licensed [mbedTLS](https://www.trustedfirmware.org/projects/mbed-tls/) and is copyright Arm Limited.
 - The SEGGER RTT logging files in [port/platform/nrf5sdk/src/segger_rtt](/port/platform/nrf5sdk/src/segger_rtt) are copyright SEGGER MICROCONTROLLER GmbH & Co. KG.
 - The AT client code in [common/at_client](/common/at_client) is derived from the Apache 2.0 licensed AT parser of [mbed-os](https://github.com/ARMmbed/mbed-os).
 - The [stm32cube platform directory](/port/platform/stm32cube/src) necessarily includes porting files from the STM32F4 SDK that are copyright ST Microelectronics.
@@ -200,6 +229,9 @@ The software in this repository is Apache 2.0 licensed and copyright u-blox with
 - The `base64` implementation in [common/utils/src/base64.h](/common/utils/src/base64.h) is copyright [William Sherif](https://github.com/superwills/NibbleAndAHalf).
 - The ARM callstack iterator in [port/platform/common/debug_utils/src/arch/arm/u_stack_frame_cortex.c](/port/platform/common/debug_utils/src/arch/arm/u_print_callstack_cortex.c) is copyright Armink, part of [CmBacktrace](https://github.com/armink/CmBacktrace).
 - The FreeRTOS additions [port/platform/common/debug_utils/src/freertos/additions](/port/platform/common/debug_utils/src/freertos/additions) are copied from the Apache licensed [ESP-IDF](https://github.com/espressif/esp-idf).
+- If you compile-in geofencing by defining the conditional compilation flag `U_CFG_GEOFENCE` for your build:
+  - For shapes larger than about 1 km, to employ a true-earth model you may choose to conditionally link the sub-module [common/geofence](geographiclib) from the MIT licensed [GeographicLib](https://github.com/geographiclib) by Charles A. Karney.
+  - The default functions, which assume a spherical earth, are derived from the valuable advice (though not the code) of https://www.movable-type.co.uk/scripts/latlong.html, MIT licensed and copyright Chris Veness.
 
 In all cases copyright, and our thanks, remain with the original authors.
 

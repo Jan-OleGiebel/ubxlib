@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -379,10 +379,14 @@ bool uCellMqttIsRetained(uDeviceHandle_t cellHandle);
  * in the call to uCellMqttInit() for example "mybroker.com:8883".
  * IMPORTANT: a re-boot of the module will lose your
  * setting.
+ *
  * Note that SARA-R4 modules do not support changing MQTT
  * TLS security mode once an MQTT session has been used
  * without powering the module down and up again.
- * Note that SARA-R4xxx-02B doesn't support MQTT TLS security.
+ *
+ * Note that SARA-R4xxx-02B does not support MQTT TLS security.
+ *
+ * Note that LENA-R8 does not support TLS security for MQTT-SN.
  *
  * @param cellHandle        the handle of the cellular instance
  *                          to be used.
@@ -510,7 +514,10 @@ int32_t uCellMqttGetWill(uDeviceHandle_t cellHandle, char *pTopicNameStr,
  */
 int32_t uCellMqttConnect(uDeviceHandle_t cellHandle);
 
-/** Stop an MQTT session.
+/** Stop an MQTT session.  Note that if, for whatever reason,
+ * there is no connection to the broker at this time, a local
+ * disconnect will in any case be performed and you must always
+ * connect to the broker again by calling uCellMqttConnect().
  *
  * @param cellHandle the handle of the cellular instance to be used.
  * @return           zero on success or negative error code.

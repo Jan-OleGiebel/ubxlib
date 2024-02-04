@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,10 +49,12 @@
 #include "u_error_common.h"
 
 #include "u_port.h"
+#include "u_port_os.h"   // Required by u_cell_private.h
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"   // Required by u_cell_private.h
 #include "u_port_uart.h"
+
+#include "u_test_util_resource_check.h"
 
 #include "u_at_client.h"
 
@@ -275,44 +277,48 @@ void changeLinger(void *p)
 // Table of supported socket options.
 static uCellSockTestOption_t gSupportedOptions[] = {
     {
-        (1UL << U_CELL_MODULE_TYPE_SARA_R422) | /* Not SARA-R422 or LARA-R6 */
-        (1UL << U_CELL_MODULE_TYPE_LARA_R6),
+        (1UL << U_CELL_MODULE_TYPE_SARA_R422) | /* Not SARA-R422 or LARA-R6 and on */
+        (1UL << U_CELL_MODULE_TYPE_LARA_R6) |   /* LENA-R8 the read response is empty */
+        (1UL << U_CELL_MODULE_TYPE_LENA_R8),
         U_SOCK_OPT_LEVEL_SOCK, U_SOCK_OPT_REUSEADDR, sizeof(int32_t), compareInt32, changeMod2
     },
     {
-        0, /* All modules */
+        (1UL << U_CELL_MODULE_TYPE_LENA_R8), /* Not LENA-R8, or at least it can be set but the read response is empty */
         U_SOCK_OPT_LEVEL_SOCK, U_SOCK_OPT_KEEPALIVE, sizeof(int32_t), compareInt32, changeMod2
     },
     {
-        (1UL << U_CELL_MODULE_TYPE_SARA_R410M_02B) |  /* Not SARA-R4 or LARA-R6 */
+        (1UL << U_CELL_MODULE_TYPE_SARA_R410M_02B) |  /* Not SARA-R4 or LARA-R6 or LENA-R8 */
         (1UL << U_CELL_MODULE_TYPE_SARA_R412M_02B) |
         (1UL << U_CELL_MODULE_TYPE_SARA_R412M_03B) |
         (1UL << U_CELL_MODULE_TYPE_SARA_R410M_03B) |
         (1UL << U_CELL_MODULE_TYPE_SARA_R422)      |
-        (1UL << U_CELL_MODULE_TYPE_LARA_R6),
+        (1UL << U_CELL_MODULE_TYPE_LARA_R6)        |
+        (1UL << U_CELL_MODULE_TYPE_LENA_R8),
         U_SOCK_OPT_LEVEL_SOCK, U_SOCK_OPT_BROADCAST, sizeof(int32_t), compareInt32, changeMod2
     },
     {
-        (1UL << U_CELL_MODULE_TYPE_SARA_R410M_02B) |  /* Not SARA-R4 */
+        (1UL << U_CELL_MODULE_TYPE_SARA_R410M_02B) |  /* Not SARA-R4  or LENA-R8 */
         (1UL << U_CELL_MODULE_TYPE_SARA_R412M_02B) |
         (1UL << U_CELL_MODULE_TYPE_SARA_R412M_03B) |
         (1UL << U_CELL_MODULE_TYPE_SARA_R410M_03B) |
-        (1UL << U_CELL_MODULE_TYPE_SARA_R422),
+        (1UL << U_CELL_MODULE_TYPE_SARA_R422)      |
+        (1UL << U_CELL_MODULE_TYPE_LENA_R8),
         U_SOCK_OPT_LEVEL_SOCK, U_SOCK_OPT_REUSEPORT, sizeof(int32_t), compareInt32, changeMod2
     },
-    // This next one removed for SARA-R4, SARA-R5, SARA-U201 as none
+    // This next one removed for SARA-R4, SARA-R5, SARA-U201 and LENA-R8 as none
     // will let me switch linger off, i.e.
     // "AT+USOSO=0,65535,128,0" returns "+CME ERROR: Operation not permitted/allowed"
     // ...and also removed for LARA-R6 as that won't let me switch it on
     {
-        (1UL << U_CELL_MODULE_TYPE_SARA_U201)      | /* Not SARA_U201 or SARA-R4 or SARA-R5 or LARA-R6 */
+        (1UL << U_CELL_MODULE_TYPE_SARA_U201)      | /* Not SARA_U201 or SARA-R4 or SARA-R5 or LARA-R6 or LENA-R8 */
         (1UL << U_CELL_MODULE_TYPE_SARA_R410M_02B) |
         (1UL << U_CELL_MODULE_TYPE_SARA_R412M_02B) |
         (1UL << U_CELL_MODULE_TYPE_SARA_R412M_03B) |
         (1UL << U_CELL_MODULE_TYPE_SARA_R410M_03B) |
         (1UL << U_CELL_MODULE_TYPE_SARA_R422)      |
         (1UL << U_CELL_MODULE_TYPE_SARA_R5)        |
-        (1UL << U_CELL_MODULE_TYPE_LARA_R6),
+        (1UL << U_CELL_MODULE_TYPE_LARA_R6)        |
+        (1UL << U_CELL_MODULE_TYPE_LENA_R8),
         U_SOCK_OPT_LEVEL_SOCK, U_SOCK_OPT_LINGER, sizeof(uSockLinger_t), compareLinger, changeLinger
     },
     {
@@ -545,7 +551,7 @@ U_PORT_TEST_FUNCTION("[cellSock]", "cellSockBasic")
     int32_t z;
     size_t count;
     char *pBuffer;
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // In case a previous test failed
     uCellSockDeinit();
@@ -557,8 +563,8 @@ U_PORT_TEST_FUNCTION("[cellSock]", "cellSockBasic")
     // out of our sums.
     rand();
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // If we memset these here we can do memcmp's afterwards
     // 'cos we don't have to worry about the bits in the packing
@@ -923,12 +929,11 @@ U_PORT_TEST_FUNCTION("[cellSock]", "cellSockBasic")
     // Free memory
     uPortFree(pBuffer);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test setting/getting socket options.
@@ -939,15 +944,15 @@ U_PORT_TEST_FUNCTION("[cellSock]", "cellSockOptionSetGet")
     void *pValue;
     void *pValueSaved;
     size_t length = 0;
-    int32_t heapUsed;
+    int32_t resourceCount;
     int32_t y;
 
     // In case a previous test failed
     uCellSockDeinit();
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -1069,12 +1074,11 @@ U_PORT_TEST_FUNCTION("[cellSock]", "cellSockOptionSetGet")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Clean-up to be run at the end of this round of tests, just
@@ -1083,26 +1087,11 @@ U_PORT_TEST_FUNCTION("[cellSock]", "cellSockOptionSetGet")
  */
 U_PORT_TEST_FUNCTION("[cellSock]", "cellSockCleanUp")
 {
-    int32_t x;
-
     uCellSockDeinit();
     uCellTestPrivateCleanup(&gHandles);
-
-    x = uPortTaskStackMinFree(NULL);
-    if (x != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d byte(s)"
-                          " free at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-    x = uPortGetHeapMinFree();
-    if (x >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free"
-                          " at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 #endif // #ifdef U_CFG_TEST_CELL_MODULE_TYPE

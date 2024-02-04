@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,10 +37,11 @@
 
 #include "u_cfg_sw.h"
 
+#include "u_compiler.h"
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"
 
 #include "u_at_client.h"
 
@@ -108,12 +109,14 @@ typedef struct {
     int32_t sockHandle; /**< The handle of the socket instance.
                              -1 if this socket is not in use. */
     uDeviceHandle_t cellHandle; /**< The handle of the cellular instance.
-                             -1 if this socket is not in use. */
+                                      -1 if this socket is not in use. */
     uAtClientHandle_t atHandle; /**< The AT client handle for this instance.
                                      NULL if this socket is not in use. */
     int32_t sockHandleModule; /**< The handle that the cellular module
                                    uses for the socket instance.
                                    -1 if this socket is not in use. */
+    uSockProtocol_t protocol; /**< the protocol type, ONLY required to work-around
+                                   a peculiarity of LENA-R8. */
     volatile int32_t pendingBytes;
     void (*pAsyncClosedCallback) (uDeviceHandle_t, int32_t); /**< Set to NULL
                                                           if socket is
@@ -124,6 +127,7 @@ typedef struct {
     void (*pClosedCallback) (uDeviceHandle_t, int32_t); /**< Set to NULL
                                                      if socket is
                                                      not in use. */
+    bool closedByRemote; /**< Will be set to true if +UUSOCL lands. */
 } uCellSockSocket_t;
 
 /** Definition of a URC handler.
@@ -219,9 +223,11 @@ static uCellSockSocket_t *pSockCreate(int32_t sockHandle,
         pSock->atHandle = atHandle;
         pSock->sockHandleModule = -1;
         pSock->pendingBytes = 0;
+        pSock->protocol = 0;
         pSock->pAsyncClosedCallback = NULL;
         pSock->pDataCallback = NULL;
         pSock->pClosedCallback = NULL;
+        pSock->closedByRemote = false;
     }
 
     return pSock;
@@ -241,9 +247,11 @@ static void sockFree(int32_t sockHandle)
             pSock->atHandle = NULL;
             pSock->sockHandleModule = -1;
             pSock->pendingBytes = 0;
+            pSock->protocol = 0;
             pSock->pAsyncClosedCallback = NULL;
             pSock->pDataCallback = NULL;
             pSock->pClosedCallback = NULL;
+            pSock->closedByRemote = false;
         }
     }
 }
@@ -259,7 +267,7 @@ static void dataCallback(const uAtClientHandle_t atHandle,
     //lint -e(507) Suppress size incompatibility: the compiler
     // we use for Lint checking is 64 bit so has 8 byte pointers
     // and Lint doesn't like them being used to carry 4 byte integers
-    int32_t sockHandle = (int32_t) pParameter;
+    int32_t sockHandle = U_PTR_TO_INT32(pParameter);
     uCellSockSocket_t *pSocket;
 
     (void) atHandle;
@@ -281,7 +289,7 @@ static void closedCallback(const uAtClientHandle_t atHandle,
     //lint -e(507) Suppress size incompatibility: the compiler
     // we use for Lint checking is 64 bit so has 8 byte pointers
     // and Lint doesn't like them being used to carry 4 byte integers
-    int32_t sockHandle = (int32_t) pParameter;
+    int32_t sockHandle = U_PTR_TO_INT32(pParameter);
     uCellSockSocket_t *pSocket;
 
     (void) atHandle;
@@ -334,7 +342,7 @@ static void UUSORD_UUSORF_urc(const uAtClientHandle_t atHandle,
                 (pSocket->pDataCallback != NULL)) {
                 uAtClientCallback(atHandle,
                                   dataCallback,
-                                  (void *) (pSocket->sockHandle));
+                                  U_INT32_TO_PTR(pSocket->sockHandle));
             }
             pSocket->pendingBytes = dataSizeBytes;
         }
@@ -360,8 +368,9 @@ static void UUSOCL_urc(const uAtClientHandle_t atHandle,
             if (pSocket->pClosedCallback != NULL) {
                 uAtClientCallback(atHandle,
                                   closedCallback,
-                                  (void *) (pSocket->sockHandle));
+                                  U_INT32_TO_PTR(pSocket->sockHandle));
             }
+            pSocket->closedByRemote = true;
         }
     }
 }
@@ -768,6 +777,7 @@ int32_t uCellSockCreate(uDeviceHandle_t cellHandle,
             uAtClientResponseStop(atHandle);
             if (uAtClientUnlock(atHandle) == 0) {
                 // All good
+                pSocket->protocol = protocol;
                 negErrnoLocal = pSocket->sockHandle;
             } else {
                 // Free the socket again
@@ -910,7 +920,7 @@ int32_t uCellSockClose(uDeviceHandle_t cellHandle,
                         // doesn't support asynchronous closure,
                         // call the trampoline from here
                         uAtClientCallback(atHandle, closedCallback,
-                                          (void *) sockHandle);
+                                          U_INT32_TO_PTR(sockHandle));
                     }
                 } else {
                     // Got an AT interace error, see
@@ -1561,7 +1571,7 @@ int32_t uCellSockWrite(uDeviceHandle_t cellHandle,
                     while ((leftToSendSize > 0) &&
                            (negErrnoLocalOrSize == U_SOCK_ENONE) &&
                            (x < U_CELL_SOCK_TCP_RETRY_LIMIT) &&
-                           written) {
+                           written && !pSocket->closedByRemote) {
                         if (leftToSendSize < thisSendSize) {
                             thisSendSize = leftToSendSize;
                         }
@@ -1597,7 +1607,15 @@ int32_t uCellSockWrite(uDeviceHandle_t cellHandle,
                         }
                         if (written) {
                             // Grab the response
-                            uAtClientResponseStart(atHandle, "+USOWR:");
+                            if ((pInstance->pModule->moduleType != U_CELL_MODULE_TYPE_LENA_R8) ||
+                                (pSocket->protocol != U_SOCK_PROTOCOL_UDP)) {
+                                uAtClientResponseStart(atHandle, "+USOWR:");
+                            } else {
+                                // Just to keep us on our toes, LENA-R8 prefixes
+                                // the information response for a socket-write to
+                                // a UDP socket with +USOST instead of +USOWR
+                                uAtClientResponseStart(atHandle, "+USOST:");
+                            }
                             // Skip the socket ID
                             uAtClientSkipParameters(atHandle, 1);
                             // Bytes sent
@@ -1724,7 +1742,8 @@ int32_t uCellSockRead(uDeviceHandle_t cellHandle,
                     // pending data or room in the buffer
                     while ((dataSizeBytes > 0) &&
                            (pSocket->pendingBytes > 0) &&
-                           (negErrnoLocalOrSize == U_SOCK_ENONE)) {
+                           (negErrnoLocalOrSize == U_SOCK_ENONE) &&
+                           !pSocket->closedByRemote) {
                         thisWantedReceiveSize = dataLengthMax;
                         if (thisWantedReceiveSize > (int32_t) dataSizeBytes) {
                             thisWantedReceiveSize = (int32_t) dataSizeBytes;
@@ -1943,6 +1962,7 @@ int32_t uCellSockGetHostByName(uDeviceHandle_t cellHandle,
     char buffer[U_SOCK_ADDRESS_STRING_MAX_LENGTH_BYTES];
     uSockAddress_t address;
     int32_t startTimeMs;
+    int32_t tries = 0;
 
     memset(&address, 0, sizeof(address));
     buffer[0] = 0;
@@ -1957,10 +1977,17 @@ int32_t uCellSockGetHostByName(uDeviceHandle_t cellHandle,
         // the request.  Hence, if we get an
         // ERROR in a short time-frame, wait a little
         // and try again
+        // Also, to keep us all entertained, LENA-R8 can,
+        // on occasion, use a response prefix of "+UUDNSRN"
+        // instead of "+UDNSRN" (i.e. it adds an extra "U")
+        // so, if parsing for the correct response fails and
+        // we're on LENA-R8 then allow one retry.
         startTimeMs = uPortGetTickTimeMs();
-        while ((atError < 0) &&
-               (uPortGetTickTimeMs() - startTimeMs <
-                U_CELL_SOCK_DNS_SHOULD_RETRY_MS)) {
+        while (((atError < 0) || (bytesRead <= 0)) &&
+               ((uPortGetTickTimeMs() - startTimeMs <
+                 U_CELL_SOCK_DNS_SHOULD_RETRY_MS) ||
+                ((pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_LENA_R8) &&
+                 (tries < 2)))) {
             if (pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_SARA_R422) {
                 // SARA-R422 can get upset if UDNSRN is sent very quickly
                 // after a connection is made so we add a short delay here
@@ -1984,21 +2011,27 @@ int32_t uCellSockGetHostByName(uDeviceHandle_t cellHandle,
             uAtClientWriteInt(atHandle, 0);
             uAtClientWriteString(atHandle, pHostName, true);
             uAtClientCommandStop(atHandle);
-            uAtClientResponseStart(atHandle, "+UDNSRN:");
+            if ((tries > 0) && (pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_LENA_R8)) {
+                // Try with an extra "U" if this is the second run for LENA-R8
+                uAtClientResponseStart(atHandle, "+UUDNSRN:");
+            } else {
+                uAtClientResponseStart(atHandle, "+UDNSRN:");
+            }
             bytesRead = uAtClientReadString(atHandle, buffer,
                                             sizeof(buffer), false);
             uAtClientResponseStop(atHandle);
             atError = uAtClientUnlock(atHandle);
             if (atError < 0) {
-                // Got an AT interace error, see
+                // Got an AT interface error, see
                 // what the module's socket error
                 // number has to say for debug purposes
                 doUsoer(atHandle);
                 uPortTaskBlock(U_CELL_SOCK_DNS_SHOULD_RETRY_MS / 2);
             }
+            tries++;
         }
 
-        if ((atError == 0) && (bytesRead >= 0)) {
+        if ((atError == 0) && (bytesRead > 0)) {
             errnoLocal = U_SOCK_ENONE;
             // All is good
             uPortLog("U_CELL_SOCK: found it at \"%.*s\".\n",

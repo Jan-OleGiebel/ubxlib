@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -81,7 +81,6 @@ extern "C" {
  */
 # define U_WIFI_SOCK_DNS_LOOKUP_TIME_SECONDS 60
 #endif
-
 
 /** Size of receive buffer for a connected data channel
  */
@@ -490,9 +489,7 @@ int32_t uWifiSockListen(uDeviceHandle_t devHandle,
  * @param[out] pRemoteAddress a pointer to a place to put the
  *                            address of the thing from which the
  *                            connection has been accepted.
- * @return                    the sockHandle to be used with this
- *                            connection from now on else negated
- *                            value of U_SOCK_Exxx from
+ * @return                    status value of U_SOCK_Exxx from
  *                            u_sock_errno.h.
  */
 int32_t uWifiSockAccept(uDeviceHandle_t devHandle,

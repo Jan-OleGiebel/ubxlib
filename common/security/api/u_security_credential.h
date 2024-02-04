@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -153,6 +153,12 @@ typedef struct {
  * an X.509 certificate; consult the security section of your u-blox
  * module AT manual, command AT+USECMNG, for further information.
  *
+ * Note: elliptic curve keys must begin with "-----BEGIN EC PRIVATE KEY-----",
+ * the "-----BEGIN EC PARAMETERS-----" field should not be present, for
+ * example generate the key with:
+ *
+ * openssl ecparam -name  prime192v1 -genkey -noout -out key.pem
+ *
  * Note: there is an issue with cellular SARA-R422 modules before the 02B
  * version where a "fresh" module, one which you have not yet written any
  * certificates to, may return an error; a workaround for this is to call
@@ -200,8 +206,8 @@ typedef struct {
  *                             for a PKCS8 encrypted private key, of
  *                             maximum length
  *                             #U_SECURITY_CREDENTIAL_PASSWORD_MAX_LENGTH_BYTES;
- *                             SARA-U201 and SARA-R4xx modules do not support
- *                             use of a password.
+ *                             SARA-U201, SARA-R4xx and LENA-R8 modules do not
+ *                             support use of a password.
  * @param pMd5                 pointer to #U_SECURITY_CREDENTIAL_MD5_LENGTH_BYTES
  *                             of storage where the MD5 hash of the DER-format
  *                             credential as stored in the module can be

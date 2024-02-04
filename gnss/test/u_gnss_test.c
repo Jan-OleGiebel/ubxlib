@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,12 +46,14 @@
 #include "u_error_common.h"
 
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"
 #include "u_port_uart.h"
 #include "u_port_i2c.h"
 #include "u_port_spi.h"
+
+#include "u_test_util_resource_check.h"
 
 #include "u_gnss_module_type.h"
 #include "u_gnss_type.h"
@@ -132,7 +134,7 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssInitialisation")
 U_PORT_TEST_FUNCTION("[gnss]", "gnssAddStream")
 {
     uDeviceHandle_t gnssHandleA;
-# if (U_CFG_APP_GNSS_SPI >= 0)
+# if (U_CFG_APP_GNSS_SPI >= 0) && (U_CFG_APP_GNSS_I2C < 0)
 #  ifdef U_CFG_TEST_GNSS_SPI_SELECT_INDEX
     uCommonSpiControllerDevice_t device = U_COMMON_SPI_CONTROLLER_DEVICE_INDEX_DEFAULTS(
                                               U_CFG_TEST_GNSS_SPI_SELECT_INDEX);
@@ -152,14 +154,14 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssAddStream")
     uGnssTransportType_t transportType = U_GNSS_TRANSPORT_NONE;
     uGnssTransportHandle_t transportHandle;
     int32_t errorCode;
-    int32_t heapUsed;
+    int32_t resourceCount;
     bool printUbxMessagesDefault;
 
     // Whatever called us likely initialised the
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uPortInit() == 0);
 
@@ -185,6 +187,9 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssAddStream")
     gTransportTypeA = U_GNSS_TRANSPORT_SPI;
     transportHandleA.spi = gStreamAHandle;
 # else
+#  ifdef U_CFG_TEST_UART_PREFIX
+    U_PORT_TEST_ASSERT(uPortUartPrefix(U_PORT_STRINGIFY_QUOTED(U_CFG_TEST_UART_PREFIX)) == 0);
+#  endif
     gStreamAHandle = uPortUartOpen(U_CFG_TEST_UART_A,
                                    U_CFG_TEST_BAUD_RATE,
                                    NULL,
@@ -214,14 +219,46 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssAddStream")
         case U_GNSS_TRANSPORT_UART:
             U_PORT_TEST_ASSERT(transportType == U_GNSS_TRANSPORT_UART);
             U_PORT_TEST_ASSERT(transportHandle.uart == transportHandleA.uart);
+#if defined(_WIN32) || (defined(__ZEPHYR__) && defined(CONFIG_UART_NATIVE_POSIX))
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_GNSS_PORT_USB);
+#else
+# ifndef U_CFG_GNSS_PORT_NUMBER
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_GNSS_PORT_UART1);
+# else
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_CFG_GNSS_PORT_NUMBER);
+# endif
+#endif
+            break;
+        case U_GNSS_TRANSPORT_UART_2:
+            U_PORT_TEST_ASSERT(transportType == U_GNSS_TRANSPORT_UART_2);
+            U_PORT_TEST_ASSERT(transportHandle.uart == transportHandleA.uart);
+#if defined(_WIN32) || (defined(__ZEPHYR__) && defined(CONFIG_UART_NATIVE_POSIX))
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_GNSS_PORT_USB);
+#else
+# ifndef U_CFG_GNSS_PORT_NUMBER
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_GNSS_PORT_UART2);
+# else
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_CFG_GNSS_PORT_NUMBER);
+# endif
+#endif
             break;
         case U_GNSS_TRANSPORT_I2C:
             U_PORT_TEST_ASSERT(transportType == U_GNSS_TRANSPORT_I2C);
             U_PORT_TEST_ASSERT(transportHandle.i2c == transportHandleA.i2c);
+#ifndef U_CFG_GNSS_PORT_NUMBER
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_GNSS_PORT_I2C);
+#else
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_CFG_GNSS_PORT_NUMBER);
+#endif
             break;
         case U_GNSS_TRANSPORT_SPI:
             U_PORT_TEST_ASSERT(transportType == U_GNSS_TRANSPORT_SPI);
             U_PORT_TEST_ASSERT(transportHandle.spi == transportHandleA.spi);
+#ifndef U_CFG_GNSS_PORT_NUMBER
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_GNSS_PORT_SPI);
+#else
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_CFG_GNSS_PORT_NUMBER);
+#endif
             break;
         default:
             U_PORT_TEST_ASSERT(false);
@@ -239,14 +276,34 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssAddStream")
 # if (U_CFG_APP_GNSS_I2C < 0) && (U_CFG_APP_GNSS_SPI < 0)
     U_TEST_PRINT_LINE("adding another instance on the same UART"
                       " port, should fail...");
+    // This time we use U_GNSS_TRANSPORT_UART_2, just for variety;
+    // it should make no difference which one we use, both should
+    // fail since transportHandleA is the same.
     U_PORT_TEST_ASSERT(uGnssAdd(U_GNSS_MODULE_TYPE_M8,
-                                U_GNSS_TRANSPORT_UART,
+                                U_GNSS_TRANSPORT_UART_2,
                                 transportHandleA,
                                 -1, false, &dummyHandle) < 0);
+    // Close it and re-open using U_GNSS_TRANSPORT_UART_2:
+    // this should work
+    uGnssRemove(gnssHandleA);
+    errorCode = uGnssAdd(U_GNSS_MODULE_TYPE_M8,
+                         U_GNSS_TRANSPORT_UART_2, transportHandleA,
+                         -1, false, &gnssHandleA);
+    U_PORT_TEST_ASSERT_EQUAL((int32_t) U_ERROR_COMMON_SUCCESS, errorCode);
+    transportHandle.uart = -1;
+    transportHandle.i2c = -1;
+    U_PORT_TEST_ASSERT(uGnssGetTransportHandle(gnssHandleA,
+                                               &transportType,
+                                               &transportHandle) == 0);
+    U_PORT_TEST_ASSERT(transportType == U_GNSS_TRANSPORT_UART_2);
+    U_PORT_TEST_ASSERT(transportHandle.uart == transportHandleA.uart);
 # endif
 
 # if (U_CFG_TEST_UART_B >= 0)
     // If we have a second UART port, add a second GNSS API on it
+#  ifdef U_CFG_TEST_UART_PREFIX
+    U_PORT_TEST_ASSERT(uPortUartPrefix(U_PORT_STRINGIFY_QUOTED(U_CFG_TEST_UART_PREFIX)) == 0);
+#  endif
     gUartBHandle = uPortUartOpen(U_CFG_TEST_UART_B,
                                  U_CFG_TEST_BAUD_RATE,
                                  NULL,
@@ -305,14 +362,46 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssAddStream")
         case U_GNSS_TRANSPORT_UART:
             U_PORT_TEST_ASSERT(transportType == U_GNSS_TRANSPORT_UART);
             U_PORT_TEST_ASSERT(transportHandle.uart == transportHandleA.uart);
+#if defined(_WIN32) || (defined(__ZEPHYR__) && defined(CONFIG_UART_NATIVE_POSIX))
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_GNSS_PORT_USB);
+#else
+# ifndef U_CFG_GNSS_PORT_NUMBER
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_GNSS_PORT_UART1);
+# else
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_CFG_GNSS_PORT_NUMBER);
+# endif
+#endif
+            break;
+        case U_GNSS_TRANSPORT_UART_2:
+            U_PORT_TEST_ASSERT(transportType == U_GNSS_TRANSPORT_UART_2);
+            U_PORT_TEST_ASSERT(transportHandle.uart == transportHandleA.uart);
+#if defined(_WIN32) || (defined(__ZEPHYR__) && defined(CONFIG_UART_NATIVE_POSIX))
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_GNSS_PORT_USB);
+#else
+# ifndef U_CFG_GNSS_PORT_NUMBER
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_GNSS_PORT_UART2);
+# else
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_CFG_GNSS_PORT_NUMBER);
+# endif
+#endif
             break;
         case U_GNSS_TRANSPORT_I2C:
             U_PORT_TEST_ASSERT(transportType == U_GNSS_TRANSPORT_I2C);
             U_PORT_TEST_ASSERT(transportHandle.i2c == transportHandleA.i2c);
+#ifndef U_CFG_GNSS_PORT_NUMBER
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_GNSS_PORT_I2C);
+#else
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_CFG_GNSS_PORT_NUMBER);
+#endif
             break;
         case U_GNSS_TRANSPORT_SPI:
             U_PORT_TEST_ASSERT(transportType == U_GNSS_TRANSPORT_SPI);
             U_PORT_TEST_ASSERT(transportHandle.spi == transportHandleA.spi);
+#ifndef U_CFG_GNSS_PORT_NUMBER
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_GNSS_PORT_SPI);
+#else
+            U_PORT_TEST_ASSERT(uGnssGetPortNumber(gnssHandleA) == U_CFG_GNSS_PORT_NUMBER);
+#endif
             break;
         default:
             U_PORT_TEST_ASSERT(false);
@@ -325,6 +414,9 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssAddStream")
     U_TEST_PRINT_LINE("removing stream...");
     switch (gTransportTypeA) {
         case U_GNSS_TRANSPORT_UART:
+            uPortUartClose(gStreamAHandle);
+            break;
+        case U_GNSS_TRANSPORT_UART_2:
             uPortUartClose(gStreamAHandle);
             break;
         case U_GNSS_TRANSPORT_I2C:
@@ -347,20 +439,11 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssAddStream")
     uPortI2cDeinit();
     uPortDeinit();
 
-# ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'ed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
-# else
-    (void) heapUsed;
-# endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 #endif
 
@@ -376,13 +459,13 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssI2cAddress")
     char *pTmp;
     int32_t y;
     int32_t errorCode;
-    int32_t heapUsed;
+    int32_t resourceCount;
 
     // Whatever called us likely initialised the
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uPortInit() == 0);
     U_PORT_TEST_ASSERT(uPortI2cInit() == 0);
@@ -486,20 +569,11 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssI2cAddress")
     uPortI2cDeinit();
     uPortDeinit();
 
-# ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'ed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
-# else
-    (void) heapUsed;
-# endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 #endif
 
@@ -509,8 +583,6 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssI2cAddress")
  */
 U_PORT_TEST_FUNCTION("[gnss]", "gnssCleanUp")
 {
-    int32_t x;
-
     uGnssDeinit();
     if (gStreamAHandle >= 0) {
         switch (gTransportTypeA) {
@@ -531,23 +603,11 @@ U_PORT_TEST_FUNCTION("[gnss]", "gnssCleanUp")
         uPortUartClose(gUartBHandle);
     }
 
-    x = uPortTaskStackMinFree(NULL);
-    if (x != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d byte(s)"
-                          " free at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortSpiDeinit();
     uPortI2cDeinit();
     uPortDeinit();
-
-    x = uPortGetHeapMinFree();
-    if (x >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free"
-                          " at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 // End of file

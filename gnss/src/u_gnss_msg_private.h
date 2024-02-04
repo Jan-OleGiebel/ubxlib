@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,7 +43,7 @@ extern "C" {
  * for a given message type, call uGnssMsgPrivateReceiveStop() with
  * the handle returned by this function.  There can be a maximum of
  * #U_GNSS_MSG_RECEIVER_MAX_NUM of these running at any one time.
- * Message handlers callbacks are called mostly-recently-added first.
+ * Message handler callbacks are called mostly-recently-added first.
  *
  * IMPORTANT: this does not work for modules connected via an AT
  * transport, please instead open a Virtual Serial connection for

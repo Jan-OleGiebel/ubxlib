@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,7 +40,7 @@
 #include "ctype.h"     // isprint()
 
 #include "u_cfg_sw.h"
-#include "u_cfg_os_platform_specific.h"  // For #define U_CFG_OS_CLIB_LEAKS
+#include "u_cfg_os_platform_specific.h"
 #include "u_cfg_app_platform_specific.h"
 #include "u_cfg_test_platform_specific.h"
 
@@ -50,10 +50,12 @@
                                               before the other port files if
                                               any print or scan function is used. */
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"
 #include "u_port_uart.h"
+
+#include "u_test_util_resource_check.h"
 
 #include "u_at_client.h"
 #include "u_at_client_test.h"
@@ -80,7 +82,7 @@
 /** The string to put at the start of all prints from this test
  * where an iteration is required.
  */
-#define U_TEST_PREFIX_X U_TEST_PREFIX_BASE "_%d: "
+#define U_TEST_PREFIX_X U_TEST_PREFIX_BASE "_%03d: "
 
 /** Print a whole line, with iteration and terminator, prefixed for
  * this test file.
@@ -121,9 +123,13 @@
  */
 #define U_AT_CLIENT_TEST_AT_TIMEOUT_MS 2000
 
+#ifndef U_AT_CLIENT_TEST_AT_TIMEOUT_TOLERANCE_MS
 /** The tolerance allowed on the AT timeout in milliseconds.
+ * You might need to override this for less real-time platforms,
+ * e.g. Raspberry Pi.
  */
-#define U_AT_CLIENT_TEST_AT_TIMEOUT_TOLERANCE_MS 250
+# define U_AT_CLIENT_TEST_AT_TIMEOUT_TOLERANCE_MS 250
+#endif
 
 /** The AT client buffer length to use during testing:
  * we send non-prefixed response of length 256 bytes plus
@@ -164,10 +170,6 @@ static int32_t gUartBHandle = -1;
  */
 static int32_t gConsecutiveTimeout;
 
-/** For tracking heap lost to memory  lost by the C library.
- */
-static size_t gSystemHeapLost = 0;
-
 # if (U_CFG_TEST_UART_B >= 0)
 
 /** AT server buffer used by atServerCallback() and atEchoServerCallback().
@@ -194,17 +196,9 @@ static void consecutiveTimeoutCallback(uAtClientHandle_t atHandle,
                                        int32_t *pCount)
 {
     (void) atHandle;
-#if U_CFG_OS_CLIB_LEAKS
-    int32_t heapUsed = uPortGetHeapFree();
-#endif
 
     U_TEST_PRINT_LINE("AT consecutive timeout callback called with %d.",
                       *pCount);
-
-#if U_CFG_OS_CLIB_LEAKS
-    // Take account of any heap lost through the printf()
-    gSystemHeapLost += (size_t) (unsigned) (heapUsed - uPortGetHeapFree());
-#endif
 
     gConsecutiveTimeout = *pCount;
 }
@@ -237,6 +231,9 @@ static void twoUartsPreamble()
 {
     char buffer[10];
 
+#ifdef U_CFG_TEST_UART_PREFIX
+    U_PORT_TEST_ASSERT(uPortUartPrefix(U_PORT_STRINGIFY_QUOTED(U_CFG_TEST_UART_PREFIX)) == 0);
+#endif
     gUartAHandle = uPortUartOpen(U_CFG_TEST_UART_A,
                                  U_CFG_TEST_BAUD_RATE,
                                  NULL,
@@ -306,7 +303,10 @@ static bool atTimeoutIsObeyed(uAtClientHandle_t atClientHandle,
     y = uAtClientUnlock(atClientHandle);
     // Give consecutiveTimeoutCallback() chance
     // to complete
-    uPortTaskBlock(U_CFG_OS_YIELD_MS);
+    // Note: used to use U_CFG_OS_YIELD_MS here
+    // but on Raspbian Linux (Pi 4) 1 ms isn't
+    // always enough
+    uPortTaskBlock(10);
     if ((x < 0) && (y < 0) &&
         (gConsecutiveTimeout == consecutiveTimeouts + 1)) {
         duration = (int32_t) (uPortGetTickTimeMs() - startTime);
@@ -319,6 +319,8 @@ static bool atTimeoutIsObeyed(uAtClientHandle_t atClientHandle,
         }
     } else {
         U_TEST_PRINT_LINE("expected AT timeout error did not occur.");
+        U_TEST_PRINT_LINE("(x %d, y %d, consecutiveTimeouts was %d, gConsecutiveTimeout is now %d).",
+                          x, y, consecutiveTimeouts, gConsecutiveTimeout);
     }
 
     return success;
@@ -523,9 +525,6 @@ static void atServerCallback(int32_t uartHandle, uint32_t eventBitmask,
     size_t increment;
     char *pBuffer;
     const char *pTmp;
-#if U_CFG_OS_CLIB_LEAKS
-    int32_t heapUsed;
-#endif
 
     if (eventBitmask & U_PORT_UART_EVENT_BITMASK_DATA_RECEIVED) {
         pCheckCommandResponse = (uAtClientTestCheckCommandResponse_t *) pParameters;
@@ -549,24 +548,10 @@ static void atServerCallback(int32_t uartHandle, uint32_t eventBitmask,
         }
 
         if (receiveLength > 0) {
-#if U_CFG_OS_CLIB_LEAKS
-            // Calling printf() from a new task causes newlib
-            // to allocate additional memory which, depending
-            // on the OS/system, may not be recovered;
-            // take account of that here.
-            heapUsed = uPortGetHeapFree();
-#endif
-
             uPortLog(U_TEST_PREFIX_X "received command: \"",
                      pCheckCommandResponse->index + 1);
             uAtClientTestPrint(gAtServerBuffer, receiveLength);
             uPortLog("\".\n");
-
-#if U_CFG_OS_CLIB_LEAKS
-            // Take account of any heap lost through the first
-            // printf()
-            gSystemHeapLost += (size_t) (unsigned) (heapUsed - uPortGetHeapFree());
-#endif
 
             // Check what we received
             pCommand = &(pCheckCommandResponse->pTestSet[pCheckCommandResponse->index].command);
@@ -928,32 +913,31 @@ int32_t uAtClientTestCheckParam(uAtClientHandle_t atClientHandle,
         switch (pParameter->type) {
             case U_AT_CLIENT_TEST_PARAMETER_INT32:
                 int32 = uAtClientReadInt(atClientHandle);
-                U_TEST_PRINT_LINE("read int32_t parameter %d (expected %d).",
-                                  pPostfix, int32, pParameter->parameter.int32);
+                U_TEST_PRINT_LINE_STR("read int32_t parameter %d (expected %d).",
+                                      pPostfix, int32, pParameter->parameter.int32);
                 if (int32 != pParameter->parameter.int32) {
                     lastError = 1;
                 }
                 break;
             case U_AT_CLIENT_TEST_PARAMETER_UINT64:
                 if (uAtClientReadUint64(atClientHandle, &uint64) == 0) {
-                    U_TEST_PRINT_LINE("read uint64_t parameter %u (expected"
-                                      " %u, noting that this may not print"
-                                      " properly where 64-bit printf() is"
-                                      " not supported).", pPostfix,
-                                      (uint32_t) uint64,
-                                      (uint32_t) pParameter->parameter.uint64);
+                    U_TEST_PRINT_LINE_STR("read uint64_t parameter %u (expected"
+                                          " %u, noting that this may not print"
+                                          " properly where 64-bit printf() is"
+                                          " not supported).", pPostfix,
+                                          (uint32_t) uint64,
+                                          (uint32_t) pParameter->parameter.uint64);
                     if (uint64 != pParameter->parameter.uint64) {
                         lastError = 2;
                     }
                 } else {
-                    U_TEST_PRINT_LINE("error reading uint64_t.", pPostfix);
+                    U_TEST_PRINT_LINE_STR("error reading uint64_t.", pPostfix);
                     lastError = 3;
                 }
                 break;
             case U_AT_CLIENT_TEST_PARAMETER_RESPONSE_STRING_IGNORE_STOP_TAG:
                 ignoreStopTag = true;
-            // Deliberate fall-through
-            //lint -fallthrough
+            //fall-through
             case U_AT_CLIENT_TEST_PARAMETER_STRING:
                 z = U_AT_CLIENT_TEST_RESPONSE_BUFFER_LENGTH;
                 if (pParameter->length > 0) {
@@ -973,7 +957,7 @@ int32_t uAtClientTestCheckParam(uAtClientHandle_t atClientHandle,
                                        strlen(pParameter->parameter.pString));
                     uPortLog("\").\n");
                     // Check length
-                    if (y == strlen(pParameter->parameter.pString)) {
+                    if (y == (int32_t)strlen(pParameter->parameter.pString)) {
                         // Check explicitly for a terminator
                         if (*(pBuffer + y) != 0) {
                             U_TEST_PRINT_LINE_STR("string terminator missing.",
@@ -995,12 +979,10 @@ int32_t uAtClientTestCheckParam(uAtClientHandle_t atClientHandle,
                 break;
             case U_AT_CLIENT_TEST_PARAMETER_RESPONSE_BYTES_IGNORE_STOP_TAG:
                 uAtClientIgnoreStopTag(atClientHandle);
-            // Deliberate fall-through
-            //lint -fallthrough
+            //fall-through
             case U_AT_CLIENT_TEST_PARAMETER_RESPONSE_BYTES_STANDALONE:
                 standalone = true;
-            // Deliberate fall-through
-            //lint -fallthrough
+            //fall-through
             case U_AT_CLIENT_TEST_PARAMETER_BYTES:
                 z = pParameter->length;
                 if (z > U_AT_CLIENT_TEST_RESPONSE_BUFFER_LENGTH) {
@@ -1010,7 +992,7 @@ int32_t uAtClientTestCheckParam(uAtClientHandle_t atClientHandle,
                 if (y >= 0) {
                     U_TEST_PRINT_LINE_STR("read %d byte(s) (expected %d byte(s)).",
                                           pPostfix, y, pParameter->length);
-                    if (y != pParameter->length) {
+                    if (y != (int32_t)pParameter->length) {
                         U_TEST_PRINT_LINE_STR("lengths differ.", pPostfix);
                         lastError = 8;
                     } else {
@@ -1057,6 +1039,8 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientInitialisation")
     U_PORT_TEST_ASSERT(uAtClientInit() == 0);
     uAtClientDeinit();
     uPortDeinit();
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 #if (U_CFG_TEST_UART_A >= 0)
@@ -1067,18 +1051,21 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientInitialisation")
 U_PORT_TEST_FUNCTION("[atClient]", "atClientConfiguration")
 {
     uAtClientHandle_t atClientHandle;
+    uAtClientStreamHandle_t stream;
     bool thingIsOn;
     int32_t x;
     char c;
-    int32_t heapUsed;
-    int32_t heapClibLossOffset = (int32_t) gSystemHeapLost;
+    int32_t resourceCount;
 
     // Whatever called us likely initialised the
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
     U_PORT_TEST_ASSERT(uPortInit() == 0);
+#ifdef U_CFG_TEST_UART_PREFIX
+    U_PORT_TEST_ASSERT(uPortUartPrefix(U_PORT_STRINGIFY_QUOTED(U_CFG_TEST_UART_PREFIX)) == 0);
+#endif
     gUartAHandle = uPortUartOpen(U_CFG_TEST_UART_A,
                                  U_CFG_TEST_BAUD_RATE,
                                  NULL,
@@ -1092,8 +1079,9 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientConfiguration")
     U_PORT_TEST_ASSERT(uAtClientInit() == 0);
 
     U_TEST_PRINT_LINE("adding an AT client on UART %d...", U_CFG_TEST_UART_A);
-    atClientHandle = uAtClientAdd(gUartAHandle, U_AT_CLIENT_STREAM_TYPE_UART,
-                                  NULL, U_AT_CLIENT_TEST_AT_BUFFER_LENGTH_BYTES);
+    stream.handle.int32 = gUartAHandle;
+    stream.type = U_AT_CLIENT_STREAM_TYPE_UART;
+    atClientHandle = uAtClientAddExt(&stream, NULL, U_AT_CLIENT_TEST_AT_BUFFER_LENGTH_BYTES);
     U_PORT_TEST_ASSERT(atClientHandle != NULL);
 
     thingIsOn = uAtClientDebugGet(atClientHandle);
@@ -1125,6 +1113,26 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientConfiguration")
     x = uAtClientTimeoutGet(atClientHandle);
     U_TEST_PRINT_LINE("timeout is now %d ms.", x);
     U_PORT_TEST_ASSERT(x == U_AT_CLIENT_DEFAULT_TIMEOUT_MS + 1);
+
+    x = uAtClientTimeoutUrcGet(atClientHandle);
+    U_TEST_PRINT_LINE("URC timeout is %d ms.", x);
+    U_PORT_TEST_ASSERT(x == U_AT_CLIENT_URC_TIMEOUT_MS);
+
+    x++;
+    uAtClientTimeoutUrcSet(atClientHandle, x);
+    x = uAtClientTimeoutUrcGet(atClientHandle);
+    U_TEST_PRINT_LINE("URC timeout is now %d ms.", x);
+    U_PORT_TEST_ASSERT(x == U_AT_CLIENT_URC_TIMEOUT_MS + 1);
+
+    x = uAtClientReadRetryDelayGet(atClientHandle);
+    U_TEST_PRINT_LINE("read retry delay is %d ms.", x);
+    U_PORT_TEST_ASSERT(x == U_AT_CLIENT_STREAM_READ_RETRY_DELAY_MS);
+
+    x++;
+    uAtClientReadRetryDelaySet(atClientHandle, x);
+    x = uAtClientReadRetryDelayGet(atClientHandle);
+    U_TEST_PRINT_LINE("read retry delay is now %d ms.", x);
+    U_PORT_TEST_ASSERT(x == U_AT_CLIENT_STREAM_READ_RETRY_DELAY_MS + 1);
 
     c = uAtClientDelimiterGet(atClientHandle);
     U_TEST_PRINT_LINE("delimiter is '%c'.", c);
@@ -1162,16 +1170,11 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientConfiguration")
     gUartAHandle = -1;
     uPortDeinit();
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("%d byte(s) of heap were lost to the C library"
-                      "during this test and we have leaked %d byte(s).",
-                      gSystemHeapLost - heapClibLossOffset,
-                      heapUsed - (gSystemHeapLost - heapClibLossOffset));
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT((heapUsed < 0) ||
-                       (heapUsed <= ((int32_t) gSystemHeapLost) - heapClibLossOffset));
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 # if (U_CFG_TEST_UART_B >= 0)
@@ -1185,6 +1188,7 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientConfiguration")
 U_PORT_TEST_FUNCTION("[atClient]", "atClientCommandSet1")
 {
     uAtClientHandle_t atClientHandle;
+    uAtClientStreamHandle_t stream;
     const uAtClientTestCommandResponse_t *pCommandResponse;
     const uAtClientTestParameter_t *pParameter;
     const uAtClientTestResponseLine_t *pLine;
@@ -1201,8 +1205,7 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientCommandSet1")
     char t = 'T';
     char r = 'R';
     bool restoreStopTag;
-    int32_t heapUsed;
-    int32_t heapClibLossOffset = (int32_t) gSystemHeapLost;
+    int32_t resourceCount;
 
     memset(&checkCommandResponse, 0, sizeof(checkCommandResponse));
     checkCommandResponse.pTestSet = gAtClientTestSet1;
@@ -1213,7 +1216,7 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientCommandSet1")
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
     U_PORT_TEST_ASSERT(uPortInit() == 0);
 
     // Set up everything with the two UARTs
@@ -1233,8 +1236,9 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientCommandSet1")
     U_PORT_TEST_ASSERT(uAtClientInit() == 0);
 
     U_TEST_PRINT_LINE("adding an AT client on UART %d...", U_CFG_TEST_UART_A);
-    atClientHandle = uAtClientAdd(gUartAHandle, U_AT_CLIENT_STREAM_TYPE_UART,
-                                  NULL, U_AT_CLIENT_TEST_AT_BUFFER_LENGTH_BYTES);
+    stream.handle.int32 = gUartAHandle;
+    stream.type = U_AT_CLIENT_STREAM_TYPE_UART;
+    atClientHandle = uAtClientAddExt(&stream, NULL, U_AT_CLIENT_TEST_AT_BUFFER_LENGTH_BYTES);
     U_PORT_TEST_ASSERT(atClientHandle != NULL);
 
     U_TEST_PRINT_LINE("setting consecutive AT timeout callback...");
@@ -1267,7 +1271,9 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientCommandSet1")
                                                urcHandler, (void *) &checkUrc);
         }
         if (lastError == 0) {
-            snprintf(buffer, sizeof(buffer), "_%d", x + 1);
+            int32_t ignored = snprintf(buffer, sizeof(buffer), "_%03d", (int)x + 1);
+            // This to stop GCC 12.3.0 complaining that variables printed into buffer are being truncated
+            (void) ignored;
             U_TEST_PRINT_LINE_X("sending command: \"%s\"...\n", x + 1,
                                 pCommandResponse->command.pString);
             uAtClientLock(atClientHandle);
@@ -1541,25 +1547,11 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientCommandSet1")
     U_PORT_TEST_ASSERT(checkUrc.passIndex == U_AT_CLIENT_TEST_NUM_URCS_SET_1);
     U_PORT_TEST_ASSERT(gConsecutiveTimeout == 0);
 
-#ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'ed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("%d byte(s) of heap were lost to the C library"
-                      " during this test and we have leaked %d byte(s).",
-                      gSystemHeapLost - heapClibLossOffset,
-                      heapUsed - (gSystemHeapLost - heapClibLossOffset));
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT((heapUsed < 0) ||
-                       (heapUsed <= ((int32_t) gSystemHeapLost) - heapClibLossOffset));
-#else
-    (void) heapUsed;
-    (void) heapClibLossOffset;
-#endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Add an AT client and use an AT echo responder to bounce-back
@@ -1577,8 +1569,7 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientCommandSet2")
     size_t x = 0;
     int32_t lastError = -1;
     int32_t y;
-    int32_t heapUsed;
-    int32_t heapClibLossOffset = (int32_t) gSystemHeapLost;
+    int32_t resourceCount;
 
     memset(&checkUrc, 0, sizeof(checkUrc));
     checkUrc.pUrc = NULL;
@@ -1587,7 +1578,7 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientCommandSet2")
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+    resourceCount = uTestUtilGetDynamicResourceCount();
     U_PORT_TEST_ASSERT(uPortInit() == 0);
 
     // Set up everything with the two UARTs
@@ -1605,6 +1596,7 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientCommandSet2")
     U_PORT_TEST_ASSERT(uAtClientInit() == 0);
 
     U_TEST_PRINT_LINE("adding an AT client on UART %d...", U_CFG_TEST_UART_A);
+    // Do it the old way this time
     atClientHandle = uAtClientAdd(gUartAHandle, U_AT_CLIENT_STREAM_TYPE_UART,
                                   NULL, U_AT_CLIENT_TEST_AT_BUFFER_LENGTH_BYTES);
     U_PORT_TEST_ASSERT(atClientHandle != NULL);
@@ -1700,7 +1692,7 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientCommandSet2")
         }
     }
 
-    U_TEST_PRINT_LINE("%d out of %d, tests passed and, of %d URCs"
+    U_TEST_PRINT_LINE("%d out of %d, tests executed and, of %d URCs"
                       " (%d expected) %d arrived correctly.", x,
                       gAtClientTestSetSize2, checkUrc.count,
                       U_AT_CLIENT_TEST_NUM_URCS_SET_2,
@@ -1726,16 +1718,11 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientCommandSet2")
     U_PORT_TEST_ASSERT(checkUrc.count == U_AT_CLIENT_TEST_NUM_URCS_SET_2);
     U_PORT_TEST_ASSERT(checkUrc.passIndex == U_AT_CLIENT_TEST_NUM_URCS_SET_2);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("%d byte(s) of heap were lost to the C library"
-                      " during this test and we have leaked %d byte(s).",
-                      gSystemHeapLost - heapClibLossOffset,
-                      heapUsed - (gSystemHeapLost - heapClibLossOffset));
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT((heapUsed < 0) ||
-                       (heapUsed <= ((int32_t) gSystemHeapLost) - heapClibLossOffset));
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 # endif
@@ -1747,8 +1734,6 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientCommandSet2")
  */
 U_PORT_TEST_FUNCTION("[atClient]", "atClientCleanUp")
 {
-    int32_t x;
-
     uAtClientDeinit();
     if (gUartAHandle >= 0) {
         uPortUartClose(gUartAHandle);
@@ -1756,22 +1741,9 @@ U_PORT_TEST_FUNCTION("[atClient]", "atClientCleanUp")
     if (gUartBHandle >= 0) {
         uPortUartClose(gUartBHandle);
     }
-
-    x = uPortTaskStackMinFree(NULL);
-    if (x != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d byte(s)"
-                          " free at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-    x = uPortGetHeapMinFree();
-    if (x >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free"
-                          " at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 // End of file

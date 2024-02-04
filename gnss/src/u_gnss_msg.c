@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -70,8 +70,8 @@
 #include "u_error_common.h"
 
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
-#include "u_port_os.h"  // Required by u_gnss_private.h
 #include "u_port_debug.h"
 #include "u_port_uart.h"
 #include "u_port_i2c.h"
@@ -345,9 +345,6 @@ int32_t uGnssMsgPrivateReceiveStart(uGnssPrivateInstance_t *pInstance,
                         }
                         if (errorCodeOrHandle != 0) {
                             // Tidy up if we couldn't get OS resources
-                            if (pMsgReceive->taskHandle != NULL) {
-                                uPortTaskDelete(msgReceiveTask);
-                            }
                             if (pMsgReceive->taskRunningMutexHandle != NULL) {
                                 uPortMutexDelete(pMsgReceive->taskRunningMutexHandle);
                             }
@@ -358,6 +355,7 @@ int32_t uGnssMsgPrivateReceiveStart(uGnssPrivateInstance_t *pInstance,
                                 uPortMutexDelete(pMsgReceive->readerMutexHandle);
                             }
                             uPortFree(pInstance->pTemporaryBuffer);
+                            pInstance->pTemporaryBuffer = NULL;
                             uRingBufferGiveReadHandle(&(pInstance->ringBuffer),
                                                       pMsgReceive->ringBufferReadHandle);
                             uPortFree(pInstance->pMsgReceive);

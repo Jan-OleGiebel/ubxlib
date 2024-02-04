@@ -8,18 +8,24 @@ The GNSS APIs are split into the following groups:
 - `cfg`: configuration of a GNSS module.
 - `pos`: reading position from a GNSS module.
 - `info`: read other information from a GNSS module.
+- `msg`: exchange your own messages with a GNSS module.
+- `dec`: decode messages received directly from the GNSS module via the `msg` API.
+- `mga`: multiple-GNSS assistance; AssistNow and other features that improve time to first fix.
+- `geofence`: flexible MCU-based geofencing, using the common [geofence](/common/geofence/api/u_geofence.h) API, only included if `U_CFG_GEOFENCE` is defined since maths and floating point operations are required; to use WGS84 coordinates and a true-earth model rather than a sphere, see instructions at the top of [u_geofence_geodesic.h](/common/geofence/api/u_geofence_geodesic.h) and the note in the [README.md](/common/geofence) there about [GeographicLib](https://github.com/geographiclib).
 - `util`: utility functions for use with a GNSS module.
 
 The module types supported by this implementation are listed in [u_gnss_module_type.h](api/u_gnss_module_type.h).
 
 This API relies upon the [common/ubx_protocol](/common/ubx_protocol) component to encode commands for and decode responses from a u-blox GNSS module and the [common/at_client](/common/at_client) component when an intermediate AT (e.g. cellular) module is employed between this MCU and the GNSS module.
 
+The operation of `ubxlib` does not rely on a particular FW version of the GNSS chip; the FW versions that we test with are listed in the [test](test) directory.
+
 # Usage
 The [api](api) directory contains the files that define the GNSS APIs, each API function documented in its header file.  In the [src](src) directory you will find the implementation of the APIs and in the [test](test) directory the tests for the APIs that can be run on any platform.
 
 A simple usage example is given below.  Note that, before calling `app_start()` the platform must be initialised (clocks started, heap available, RTOS running), in other words `app_task()` can be thought of as a task entry point.  If you open the `u_main.c` file in the `app` directory of your platform you will see how we do this, with `main()` calling a porting API `uPortPlatformStart()` to sort that all out; you could paste the example code into `app_start()` there (and add the inclusion of `ubxlib.h`) as a quick and dirty test (`runner` will build it).
 
-```
+```c
 #include "ubxlib.h"
 #include "u_cfg_app_platform_specific.h"
 

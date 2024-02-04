@@ -29,7 +29,7 @@ Note also that, for moving stuff around, all the keys here are plain text and ca
 These steps need to be performed once to get the server sorted and each client authenticated to use it.
 
 ## Server
-These steps are carried out on the same machine as the Jenkins Docker container is running.  The DNS entry through which the machine is externally visible is assumed to be `ubxlib-test-system.redirectme.net` and the e-mail address of the administrator is assumed to be `ubxlib@u-blox.com`.
+These steps are carried out on the same machine as the Jenkins Docker container is running.  The DNS entry through which the machine is externally visible is assumed to be `ubxlib.com` and the e-mail address of the administrator is assumed to be `ubxlib@u-blox.com`.
 
 ### DNS Address
 By whatever means at your disposal give the externally-visible IP address of the `ubxlib` test system's router a DNS address on the public internet.  For instance, you might use a service such as [noip](https://www.noip.com/), with the router running the necessary dynamic DNS client (most routers support this).  Note that, if the WAN-side of your router will be behind a firewall your DNS provider must allow you to create TXT records for your domain,.
@@ -45,9 +45,9 @@ If the WAN-side of the router inside the `ubxlib` test system is on the public i
 sudo docker run -it --rm --name certbot -v /etc/letsencrypt:/etc/letsencrypt -v /var/lib/letsencrypt:/var/lib/letsencrypt -p 80:80 certbot/certbot certonly --standalone
 ```
 
-  ...giving it the e-mail address `ubxlib@u-blox.com` and the URL `ubxlib-test-system.redirectme.net` when prompted.
+  ...giving it the e-mail address `ubxlib@u-blox.com` and the URL `ubxlib.com` when prompted.
 
-- The private key and signed certificate will have been placed into `/etc/letsencrypt/live/ubxlib-test-system.redirectme.net`.
+- The private key and signed certificate will have been placed into `/etc/letsencrypt/live/ubxlib.com`.
 
 - `ubxlib@u-blox.com` will be sent an e-mail a few weeks before the certificate (3 months validity) expires; if port 80 will ALWAYS be open for incoming TCP connections you may renew it automatically by running the following command on the Jenkins machine, say, once a day:
 
@@ -58,25 +58,127 @@ sudo docker run -it --rm --name certbot -v /etc/letsencrypt:/etc/letsencrypt -v 
 - Note: once you have NGINX running, after updating certificates you will need to reload it to start using them: `docker exec -it nginx nginx -s reload`.
 
 ### HTTPS Certificate: "Router Behind Firewall" Case
-If the WAN-side of the router inside the `ubxlib` test system is behind a firewall you can no longer use the usual Certbot HTTP route to get a certificate for your HTTP server.  This is because ports can only be made open for incoming connections through the [Tunneling](#tunneling) mechanism and that does NOT work for ports numbered less than 1024 (that's just the way Linux is written) and Let's Encrypt will ONLY use port 80 to establish trust over HTTP.  Instead you must use the DNS authentication mechanism that Certbot/Let's Encrypt offers, where trust is established by checking that you own the DNS entry for the server.  Unforunately `noip` only allows this to be done manually, and hence the renewal process cannot be automated.
+If the WAN-side of the router inside the `ubxlib` test system is behind a firewall you can no longer use the usual Certbot HTTP route to get a certificate for your HTTP server.  This is because ports can only be made open for incoming connections through the [Tunneling](#tunneling) mechanism and that does NOT work for ports numbered less than 1024 (that's just the way Linux is written) and Let's Encrypt will ONLY use port 80 to establish trust over HTTP.  Instead you must use the DNS authentication mechanism that Certbot/Let's Encrypt offers, where trust is established by checking that you own the DNS entry for the server.
 
-- Log-in to the place that provides the DNS record for `ubxlib-test-system.redirectme.net` and be ready to add a new TXT record.
+#### `noip` Case
+If you are using `noip` to provide your DNS record/static IP address, it does not, unfortunately, support setting the necessary DNS record through an API, and hence the renewal process cannot be automated, it has to be performed manually as follows:
 
-- Obtain a private key for `ubxlib-test-system.redirectme.net` and get that signed by a CA (Let's Encrypt) by running Certbot in a Docker container as follows:
+- Log-in to `noip` and be ready to add a new TXT record.
+
+- Obtain a private key for the URL of the test system (e.g. `ubxlib.com`) and get that signed by a CA (Let's Encrypt) by running Certbot in a Docker container as follows:
 
 ```
-sudo docker run -it --rm --name certbot -v /etc/letsencrypt:/etc/letsencrypt -v /var/lib/letsencrypt:/var/lib/letsencrypt certbot/certbot certonly --manual --debug-challenges --preferred-challenges dns -d ubxlib-test-system.redirectme.net
+sudo docker run -it --rm --name certbot -v /etc/letsencrypt:/etc/letsencrypt -v /var/lib/letsencrypt:/var/lib/letsencrypt certbot/certbot certonly --manual --debug-challenges --preferred-challenges dns -d ubxlib.com
 ```
 
-  ...giving it the e-mail address `ubxlib@u-blox.com` and the URL `ubxlib-test-system.redirectme.net` if prompted.
+  ...giving it the e-mail address `ubxlib@u-blox.com` and the URL of the test system (assumed to be `ubxlib.com`) if prompted.
 
-- You will be asked to add a TXT record to the `ubxlib-test-system.redirectme.net` domain name record, with a `_acme-challenge` sub-domain (i.e. prefix) and with the value being a random text string that Let's Encrypt will check.  Do this and confirm to `CertBot` that you have done so.
+- You will be asked to add a TXT record to the DNS record inside `noip`, with a `_acme-challenge` sub-domain (i.e. prefix) and with the value being a random text string that Let's Encrypt will check.  Do this and confirm to `CertBot` that you have done so.
 
-- The private key and signed certificate will have been placed into `/etc/letsencrypt/live/ubxlib-test-system.redirectme.net`.
+- The private key and signed certificate will have been placed into `/etc/letsencrypt/live/ubxlib.com`.
 
 - Note: `ubxlib@u-blox.com` will be sent an e-mail a few weeks before the certificate (3 months validity) expires, at which point you can renew it manually by repeating the process above.
 
 - Note: once you have NGINX running, after updating certificates you will need to reload it to start using them: `docker exec -it nginx nginx -s reload`.
+
+#### AWS Route 53 Case
+If you are using Amazon Web Services Route 53 to provide your DNS record/static IP address then you can set up Cerbot/Let's Encrypt to obtain a private key for the URL of the test system (e.g. `ubxlib.com`) and get that signed by a CA (Let's Encrypt) automatically using [certbot-dns-route53](https://certbot-dns-route53.readthedocs.io/en/stable/).
+
+Do the following in the AWS web console:
+
+- Create an IAM (Identity and Access Management) policy named `certbot-dns-route53`, description `Permissions sufficient to auto-update Lets Encrypt certificate via DNS with Certbot`, using the following JSON, where the `HOSTEDZONEID` for `ubxlib.com` can be found in the `Hosted Zones` section of your AWS Route 53 management console:
+
+```
+{
+    "Version": "2012-10-17",
+    "Id": "certbot-dns-route53 policy",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "route53:ListHostedZones",
+                "route53:GetChange"
+            ],
+            "Resource": [
+                "*"
+            ]
+        },
+        {
+            "Effect" : "Allow",
+            "Action" : [
+                "route53:ChangeResourceRecordSets"
+            ],
+            "Resource" : [
+                "arn:aws:route53:::hostedzone/HOSTEDZONEID"
+            ]
+        }
+    ]
+}
+```
+
+- Create an IAM user named `certbot`, without console access, and attach to it the `certbot-dns-route53` policy you just created.
+
+- Select the newly created `certbot` user and create an access key (ID/secret pair) for it with the description `Certbot renewal`.
+
+Do the following on the Jenkins machine:
+
+- Create a path named `/etc/aws/config` with the following contents, replacing the example values with the access key ID/secret you obtained above:
+
+```
+[default]
+aws_access_key_id=AKIAIOSFODNN7EXAMPLE
+aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+```
+
+- Run the `certbot/dns-route53` Docker container as follows to create the certificate:
+
+```
+sudo docker run --rm --name certbot --env AWS_CONFIG_FILE=/etc/aws/config -v /etc/aws:/etc/aws -v /etc/letsencrypt:/etc/letsencrypt -v /var/lib/letsencrypt:/var/lib/letsencrypt certbot/dns-route53 certonly --dns-route53 -d ubxlib.com
+```
+
+- The private key and signed certificate will be placed into `/etc/letsencrypt/live/ubxlib.com`.
+
+- Set this up to [auto-renew](https://eff-certbot.readthedocs.io/en/stable/using.html#setting-up-automated-renewal) (checked twice daily) with:
+
+```
+SLEEPTIME=$(awk 'BEGIN{srand(); print int(rand()*(3600+1))}'); echo "0 0,12 * * * root sleep $SLEEPTIME && docker run --rm --name certbot --env AWS_CONFIG_FILE=/etc/aws/config -v /etc/aws:/etc/aws -v /etc/letsencrypt:/etc/letsencrypt -v /var/lib/letsencrypt:/var/lib/letsencrypt certbot/dns-route53 renew -q" | sudo tee -a /etc/crontab > /dev/null
+```
+
+- To have `NGINX` restarted when auto-renewal has occurred, you'll need to create a named pipe on the host machine to which the `certbot/dns-route53` Docker container can send a reload command; it goes like this:
+  - Create a named pipe with `mkfifo /etc/letsencrypt/docker_host_pipe`; `ls -l /etc/letsencrypt/docker_host_pipe` should show a `p` in the first character of the file flags.
+  - Create a file named `/etc/letsencrypt/docker_host_pipe_eval.sh` to execute stuff coming through the pipe with contents:
+    ```
+    #!/bin/bash
+    while true; do eval "$(cat /etc/letsencrypt/docker_host_pipe)"; done
+    ```
+  - Give the file the correct permissions with `sudo chmod +x /etc/letsencrypt/docker_host_pipe_eval.sh`.
+  - Start the script manually with:
+    ```
+    sudo sh /etc/letsencrypt/docker_host_pipe_eval.sh&
+    ```
+  - Check that it works with something like:
+    ```
+    echo "echo Hello host" | sudo tee /etc/letsencrypt/docker_host_pipe
+    ```
+    ...which should result in something like:
+    ```
+    echo Hello host
+    Hello host
+    ```
+  - Create a deploy-hook file named `/etc/letsencrypt/renewal-hooks/deploy/nginx_restart.sh` that will be run by the `certbot/dns-route53` Docker container, redirecting its commands to the named pipe:
+    ```
+    #!/bin/sh
+    echo "echo Restarting NGINX docker on host" > /etc/letsencrypt/docker_host_pipe
+    echo "docker exec nginx nginx -s reload" > /etc/letsencrypt/docker_host_pipe
+    ```
+  - Give the file the correct permissions with `sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/nginx_restart.sh`.
+  - Check that this works with a dry-run:
+    ```
+    docker run --rm --name certbot --env AWS_CONFIG_FILE=/etc/aws/config -v /etc/aws:/etc/aws -v /etc/letsencrypt:/etc/letsencrypt -v /var/lib/letsencrypt:/var/lib/letsencrypt certbot/dns-route53 --dry-run --run-deploy-hooks renew
+    ```
+    ...you should see `Restarting NGINX docker` and something like `[notice]: signal process started` mixed-in towards the end of the usual `certbot/dns-route53` output.
+  - Make this start at boot by editing `/etc/crontab` to add on the end `@reboot /etc/letsencrypt/docker_host_pipe_eval.sh`.
+  - Check that this works at boot by modifying the `cron` entry to, say, run every 5 minutes (`*/5 * * * *` at the start), and have the `--dry-run --run-deploy-hooks` switches in it; try rebooting and watch `journalctl -f` to see if it runs.
 
 ### Setting Up As A Certificate Authority
 Note: the keys/certificates etc. used here are entirely separate from those generated by Certbot above, don't mix the two.  Also, the naming pattern used by Cerbot (more correct in my view), in which the file extension `.pem` designates the format of the file, is replaced here by what appears to be the more usual format for SSL stuff, which is that certificates end with `.crt`, keys with `.key` and certificate signing requests with `.csr`; all are PEM format anyway.
@@ -124,7 +226,7 @@ emailAddress            = supplied
 openssl genrsa -des3 -out /etc/ssl/private/ubxlib_test_system.key 4096
 ```
 
-- Create a CA certificate for the server to sign things with, valid for 10 years, using the same key as was used to authenticate this machine through Certbot and populating `Country Name` with `GB`, `State or Province Name` empty, `Locality Name` empty, `Organization Name` with `u-blox`, `Organizational Unit Name` with `ubxlib`, `Common Name` with `ubxlib-test-system.redirectme.net` and `Email Address` with `ubxlib@u-blox.com`:
+- Create a CA certificate for the server to sign things with, valid for 10 years, using the same key as was used to authenticate this machine through Certbot and populating `Country Name` with `GB`, `State or Province Name` empty, `Locality Name` empty, `Organization Name` with `u-blox`, `Organizational Unit Name` with `ubxlib`, `Common Name` with the URL that the test system will appear as (e.g. `ubxlib.com`) and `Email Address` with `ubxlib@u-blox.com`:
 
 ```
 openssl req -new -x509 -days 3650 -key /etc/ssl/private/ubxlib_test_system.key -out /etc/ssl/certs/ubxlib_test_system_ca.crt
@@ -163,14 +265,14 @@ docker exec -u root -t -i nginx nano /etc/nginx/conf.d/default.conf
 ```
     listen       xxxx ssl;
     listen  [::]:xxxx ssl;
-    server_name  ubxlib-test-system.redirectme.net;
+    server_name  ubxlib.com;
 ```
 
   ...locate the files generated by Certbot and the local Certificate Authority CA file by adding:
 
 ```
-    ssl_certificate        /etc/letsencrypt/live/ubxlib-test-system.redirectme.net/fullchain.pem;
-    ssl_certificate_key    /etc/letsencrypt/live/ubxlib-test-system.redirectme.net/privkey.pem;
+    ssl_certificate        /etc/letsencrypt/live/ubxlib.com/fullchain.pem;
+    ssl_certificate_key    /etc/letsencrypt/live/ubxlib.com/privkey.pem;
 
     ssl_client_certificate /etc/ssl/certs/ubxlib_test_system_ca.crt;
     ssl_crl                /etc/ssl/CA/ca.crl;
@@ -189,11 +291,11 @@ docker exec -u root -t -i nginx nano /etc/nginx/conf.d/default.conf
 
 - On the router, set up port forwarding so that requests arriving on the WAN side for port `xxxx` are forwarded to the same port on the LAN-side address of the Jenkins machine.  If the WAN-side of your router is behind a firewall, see [Tunneling](#tunneling).
 
-- Run `docker restart nginx` and open a browser window to `https://ubxlib-test-system.redirectme.net:xxxx`: you should see a message something like `400 Bad Request: No required SSL certificate was sent`; this is because we've not yet set up your client device as one that is permitted to log in (if you comment out the line `ssl_verify_client on` above and restart NGINX you will get to the Jenkins log-in prompt, but don't do that 'cos were open to the internet now).
+- Run `docker restart nginx` and open a browser window to `https://ubxlib.com:xxxx`: you should see a message something like `400 Bad Request: No required SSL certificate was sent`; this is because we've not yet set up your client device as one that is permitted to log in (if you comment out the line `ssl_verify_client on` above and restart NGINX you will get to the Jenkins log-in prompt, but don't do that 'cos were open to the internet now).
 
 - Note: if you are unable to get to the warning stage, logs of NGINX's behaviour can be viewed with `docker logs nginx`.  If you are not able to even get that far, temporarily switch logging to "everything" on the router and see if you can see an incoming connection being dropped or accepted from the IP address of the machine you are browsing from (browse to https://whatsmyip.com/ on that machine to determine its external IP address if you don't know it).  If the connection _is_ being accepted at the router, try taking a [Wireshark](https://www.wireshark.org/) log on the Jenkins machine with `sudo yum install wireshark` followed by something like `sudo tshark -i eno1`, assuming `eno1` is the Ethernet port that is the LAN address of the Jenkins machine, to see if the connection attempt is getting from the router to the machine.
 
-- With all of this done, in order to get Jenkins to refer to itself as being at the new external URL, in Jenkins go to `Manage Jenkins` -> `Configure System` find `Jenkins Location` and set `Jenkins URL` to be `https://ubxlib-test-system.redirectme.net:xxxx`.  The Jenkins configuration page will then pop-up a warning along the lines of `It appears that your reverse proxy set up is broken`, since Jenkins itself cannot get to that URL; this warning can be dismissed.
+- With all of this done, in order to get Jenkins to refer to itself as being at the new external URL, in Jenkins go to `Manage Jenkins` -> `Configure System` find `Jenkins Location` and set `Jenkins URL` to be `https://ubxlib.com:xxxx`.  The Jenkins configuration page will then pop-up a warning along the lines of `It appears that your reverse proxy set up is broken`, since Jenkins itself cannot get to that URL; this warning can be dismissed.
 
 ## Clients
 The steps required for initial setup of each client that wishes to access the system are set out below.  Generation of the key/Certificate Signing Request may be done either by the user (typically a Linux user will know how to do this) or by the `ubxlib` test system admin (which might be an easier option for Windows users since then there is no need to install OpenSSL on their machine).  Getting the user to do it is preferred as that way their private key never leaves their device.
@@ -236,6 +338,16 @@ openssl ca -gencrl -keyfile /etc/ssl/private/ubxlib_test_system.key -cert /etc/s
 docker restart nginx
 ```
 
+- The default OpenSSL configuration file will not allow you to generate a new certificate for one which already exists in the index.  If a client certificate is about to expire and you want to generate a new one to send to the user _before_ the one they have expires, you will need to edit ` /etc/ssl/CA/index.txt.attr` (create it if it doesn't exist) to have the line `unique_subject = no` in it.
+
+- If a client certificate has expired, run the following command:
+
+```
+ sudo openssl ca -updatedb -config /etc/pki/tls/openssl.cnf
+```
+
+This will update `/etc/ssl/CA/index.txt` so that the certificate is marked as expired (with an `E` in the first column).  If you wish, you may then you generate a new certificate from the same `.csr` file using exactly the same command-line as you used to create it in the first place.
+
 #### Installation
 These steps are carried out by the user on the device where they generated their private key.
 
@@ -253,7 +365,7 @@ openssl pkcs12 -export -out ubxlib_test_system_devicename.pfx -inkey ubxlib_test
 
 - Troubleshooting: if it does not you might take a Wireshark log on your local machine while doing the above and look in the SSL handshake for (a) the server sending a Certificate Request (the Distinguished Names it is asking for should be those of the CA certificate) and (b) the client responding with Certificate: is it of non-zero length and, if so, does the Public Key string match the one in the signed certificate that you installed?
 
-### "Ubxlib Test System Admin Generates Private Key"  Method
+### "`ubxlib` Test System Admin Generates Private Key"  Method
 Use this method if the user is not able to generate a private key on their device.
 
 - Ask them to e-mail their `devicename` to `ubxlib@u-blox.com`.
@@ -364,7 +476,7 @@ systemctl restart sshd_external.service
 
 - The client should now be able to SSH into the Jenkins machine with something like `ssh -i path/to/ubxlib_test_system_client_key -p <ssh_port> ubxlib@jenkinsurl`, or you may use [PuTTY](https://www.putty.org/), for which you need [to convert your private key to a `.ppk` file](https://sites.google.com/site/xiangyangsite/home/technical-tips/linux-unix/common-tips/how-to-convert-ssh-id_rsa-keys-to-putty-ppk).
 
-If this doesn't work, try looking at `systemctl status sshd_external.service` or taking Wireshark logs on the client and server machines to see what SSH might be objecting to.
+If this doesn't work, try looking at `systemctl status sshd_external.service`, maybe set `LogLevel DEBUG` in the server's `sshd_external_config` or try taking Wireshark logs on the client and server machines to see what SSH might be objecting to.
 
 - Similarly, the client should be able to SFTP into the Jenkins machine with something like `sftp -i path/to/ubxlib_test_system_client_key -P <ssh_port> ubxlib@jenkinsurl` (noting the capital `-P` this time) or, if a GUI is preferred, using something like [FileZilla](https://filezilla-project.org/).
 
@@ -383,13 +495,21 @@ You want port 8888 on your local machine to be available to someone who accesses
 ssh -N -R 8888:localhost:8888 user@remote_machine
 ```
 
-This tells the SSH server on `remote_machine` to send any packets headed for port 8888 on that machine (the first 8888) to the machine where you ran the above command, port 8888 (the second 8888). `-N` means don't do an interactive login.
+This tells the SSH server on `remote_machine` to send any packets headed for port 8888 on that machine (the first 8888) to the machine where you ran the above command, port 8888 (the second 8888). `-N` means don't do an interactive login.  Note: if the `remote_machine` is an Amazon EC2 instance the `user` here is a Linux user on that machine, it has nothing at all to do with the many AWS IAM users etc.
 
-Obviously it is important to make sure that you only SSH-forward to ports where you know you have, for instance, NGINX or an SSH-key-protected SSH server listening on the local machine.  You may also need to make sure that, on the remote machine, `/etc/ssh/sshd_config` has `GatewayPorts` set to `yes`.  And obvously the port (8888 in this case) would need to be open to the public internet for incoming TCP connections both on the remote machine and on that machine's network firewall.  Then, if you do the above command on the Jenkins machine, users will be able to access the Jenkins web pages, secured through NGINX, at the URL of the remote machine.  Obviously you will need to do the same for SSH/SFTP access.
+Obviously it is important to make sure that you only SSH-forward to ports where you know you have, for instance, NGINX or an SSH-key-protected SSH server listening on the local machine.  You may also need to make sure that, on the remote machine, `/etc/ssh/sshd_config` has `GatewayPorts` set to `yes`, `AllowTcpForwarding` set to `remote` and `ClientAliveInterval 30`/`ClientAliveCountMax 2` to drop unused connections (restart `ssh.service` after making changes).  And obviously the port (8888 in this case) would need to be open to the public internet for incoming TCP connections both on the remote machine and on that machine's network firewall.  Then, if you do the above command on the Jenkins machine, users will be able to access the Jenkins web pages, secured through NGINX, at the URL of the remote machine.  Obviously you will need to do the same for SSH/SFTP access.
 
 Note: with this approach you don't actually need any port-forwarding on your router at all, since all TCP connections (i.e. the SSH tunnel) are outward.
 
-To set this up to run at boot on the Jenkins machine, make sure that you authenticate with the SSH server machine using a key pair so that you don't need to type in a password (you can give your SSH key to the `ssh` command line with the `-i` option).  Rather than just running `ssh` as a command-line, or even as `systemd` service, the favoured approach seems to be to install [autossh](https://www.harding.motd.ca/autossh/) with:
+To set this up to run at boot on the Jenkins machine, first create a key-pair (no passphrase, the SSH daemon can't type) with:
+
+```
+ssh-keygen -f path/to/tunnel_key -t ecdsa -b 521
+```
+
+...and, similar to above, on the server machine add the contents of the `.pub` file as a new line in the file `~/.ssh/authorized_keys` (which should have the right permissions set (see above)).
+
+Rather than just running `ssh` as a command-line, or even as `systemd` service, the favoured approach seems to be to install [autossh](https://www.harding.motd.ca/autossh/) with:
 
 ```
 wget -c https://www.harding.motd.ca/autossh/autossh-1.4g.tgz
@@ -404,7 +524,7 @@ sudo make install
 ...run `autossh` once, manually, as `sudo` in order to accept the signature of the remote server with something like:
 
 ```
-sudo /usr/local/bin/autossh -M 0 -o "ServerAliveInterval 30" -o "ServerAliveCountMax 3" -N -R 8888:localhost:8888 user@remote_machine -i path/to/ssh_key
+sudo /usr/local/bin/autossh -M 0 -o "ServerAliveInterval 30" -o "ServerAliveCountMax 3" -N -R 8888:localhost:8888 user@remote_machine -i path/to/tunnel_key
 ```
 
 ...and start `autossh` with a `systemd` file named something like `/etc/systemd/system/tunnel-https.service` containing something like the following:
@@ -418,7 +538,7 @@ After=network.target
 Restart=on-failure
 RestartSec=5
 Environment=AUTOSSH_GATETIME=0
-ExecStart=/usr/local/bin/autossh -M 0 -o "ServerAliveInterval 30" -o "ServerAliveCountMax 3" -N -R 8888:localhost:8888 user@remote_machine -i path/to/ssh_key
+ExecStart=/usr/local/bin/autossh -M 0 -o "ServerAliveInterval 30" -o "ServerAliveCountMax 3" -N -R 8888:localhost:8888 user@remote_machine -i path/to/tunnel_key
 ExecStop= /usr/bin/killall autossh
 
 [Install]

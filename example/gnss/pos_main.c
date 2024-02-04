@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,9 +54,23 @@
  * TYPES
  * -------------------------------------------------------------- */
 
+// Optionally, define a user context which you can use to pass
+// information to a callback that does not have a dedicated
+// void * callback parameter (this is the case with
+// uGnssPosGetStreamedStart()).
+typedef struct {
+    char *pSomething;
+    int32_t somethingElse;
+} MyContext_t;
+
 /* ----------------------------------------------------------------
  * VARIABLES
  * -------------------------------------------------------------- */
+
+// ZEPHYR USERS may prefer to set the device and network
+// configuration from their device tree, rather than in this C
+// code: see /port/platform/zephyr/README.md for instructions on
+// how to do that.
 
 // GNSS configuration.
 // Set U_CFG_TEST_GNSS_MODULE_TYPE to your module type,
@@ -64,7 +78,7 @@
 //
 // Note that the pin numbers are those of the MCU: if you
 // are using an MCU inside a u-blox module the IO pin numbering
-// for the module is likely different that from the MCU: check
+// for the module is likely different to that of the MCU: check
 // the data sheet for the module to determine the mapping.
 
 #if ((U_CFG_APP_GNSS_UART >= 0) || (U_CFG_APP_GNSS_I2C >= 0) || (U_CFG_APP_GNSS_SPI >= 0))
@@ -146,11 +160,17 @@ static const uDeviceCfg_t gDeviceCfg = {
     .transportCfg = {
         .cfgUart = {
             .uart = U_CFG_APP_GNSS_UART,
-            .baudRate = U_GNSS_UART_BAUD_RATE,
+            .baudRate = U_GNSS_UART_BAUD_RATE, /* Use 0 to try all possible baud rates
+                                                  and find the correct one. */
             .pinTxd = U_CFG_APP_PIN_GNSS_TXD,
             .pinRxd = U_CFG_APP_PIN_GNSS_RXD,
             .pinCts = U_CFG_APP_PIN_GNSS_CTS,
-            .pinRts = U_CFG_APP_PIN_GNSS_RTS
+            .pinRts = U_CFG_APP_PIN_GNSS_RTS,
+#ifdef U_CFG_APP_UART_PREFIX
+            .pPrefix = U_PORT_STRINGIFY_QUOTED(U_CFG_APP_UART_PREFIX) // Relevant for Linux only
+#else
+            .pPrefix = NULL
+#endif
         },
     },
 #  endif
@@ -211,6 +231,9 @@ static void callback(uDeviceHandle_t gnssHandle,
     int32_t whole[2] = {0};
     int32_t fraction[2] = {0};
 
+    // Pick up our user context
+    MyContext_t *pContext = (MyContext_t *) pUDeviceGetUserContext(gnssHandle);
+
     // Not using these, just keep the compiler happy
     (void) gnssHandle;
     (void) altitudeMillimetres;
@@ -218,6 +241,9 @@ static void callback(uDeviceHandle_t gnssHandle,
     (void) speedMillimetresPerSecond;
     (void) svs;
     (void) timeUtc;
+    // We don't actually use the user context here, but
+    // of course _you_ could
+    (void) pContext;
 
     if (errorCode == 0) {
         prefix[0] = latLongToBits(longitudeX1e7, &(whole[0]), &(fraction[0]));
@@ -240,6 +266,7 @@ U_PORT_TEST_FUNCTION("[example]", "exampleGnssPos")
     uDeviceHandle_t devHandle = NULL;
     int32_t returnCode;
     int32_t guardCount = 0;
+    MyContext_t context = {0};
 
     // Initialise the APIs we will need
     uPortInit();
@@ -254,6 +281,13 @@ U_PORT_TEST_FUNCTION("[example]", "exampleGnssPos")
     if (returnCode == 0) {
         // Since we are not using the common APIs we do not need
         // to call uNetworkInteraceUp()/uNetworkInteraceDown().
+
+        // If you need to pass context data to
+        // uGnssPosGetStreamedStart(), which does not include
+        // a user parameter in its function signature, set
+        // a user context for ourselves in the device, which
+        // we can pick up in callback()
+        uDeviceSetUserContext(devHandle, (void *) &context);
 
         // Start to get position
         uPortLog("Starting position stream.\n");

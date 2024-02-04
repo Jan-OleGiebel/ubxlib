@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,14 +24,16 @@
  * @brief Tests for the cellular MUX API.
  * These test should pass on all platforms that have a cellular module
  * connected to them.  They are only compiled if U_CFG_TEST_CELL_MODULE_TYPE
- * is defined and can be disabled with U_CFG_TEST_DISABLE_MUX.
+ * is defined and can be disabled with U_CFG_TEST_DISABLE_MUX, however
+ * they are also disabled if U_CFG_PPP_ENABLE is defined since stopping
+ * the mux while PPP is using it upsets just about everyone.
  *
  * IMPORTANT: see notes in u_cfg_test_platform_specific.h for the
  * naming rules that must be followed when using the
  * U_PORT_TEST_FUNCTION() macro.
  */
 
-#if defined(U_CFG_TEST_CELL_MODULE_TYPE) && !defined(U_CFG_TEST_DISABLE_MUX)
+#if defined(U_CFG_TEST_CELL_MODULE_TYPE) && !defined(U_CFG_TEST_DISABLE_MUX) && !defined(U_CFG_PPP_ENABLE)
 
 # ifdef U_CFG_OVERRIDE
 #  include "u_cfg_override.h" // For a customer's configuration override
@@ -56,9 +58,11 @@
                                               before the other port files if
                                               any print or scan function is used. */
 #include "u_port.h"
+#include "u_port_os.h"   // Required by u_cell_private.h
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"   // Required by u_cell_private.h
+
+#include "u_test_util_resource_check.h"
 
 #include "u_at_client.h"
 
@@ -112,7 +116,7 @@
 #ifndef U_CELL_MUX_TEST_MQTT_SERVER_IP_ADDRESS
 /** Server to use for the MQTT part of the mux test.
  */
-# define U_CELL_MUX_TEST_MQTT_SERVER_IP_ADDRESS  ubxlib.redirectme.net
+# define U_CELL_MUX_TEST_MQTT_SERVER_IP_ADDRESS  ubxlib.com
 #endif
 
 #ifndef U_CELL_MUX_TEST_MQTT_RESPONSE_TIMEOUT_MS
@@ -133,9 +137,13 @@
 # define  U_CELL_MUX_TEST_HTTP_DATA_FILE_NAME "ubxlib_test_http_putpost"
 #endif
 
-/** The first line of an HTTP response indicating success.
+/** The first line of an HTTP response indicating success, normal case.
  */
-#define U_CELL_MUX_TEST_HTTP_FIRST_LINE_200 "HTTP/1.0 200 OK"
+#define U_CELL_MUX_TEST_HTTP_FIRST_LINE_200_DEFAULT "HTTP/1.0 200 OK"
+
+/** The first line of an HTTP response indicating success, LENA-R8 case.
+ */
+#define U_CELL_MUX_TEST_HTTP_FIRST_LINE_200_LENA_R8 "HTTP/1.1 200 OK"
 
 /* ----------------------------------------------------------------
  * TYPES
@@ -443,7 +451,7 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxBasic")
 {
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
-    int32_t heapUsed;
+    int32_t resourceCount;
     // +1 and zero init so that we can treat it as a string
     char buffer1[U_CELL_INFO_IMEI_SIZE + 1] = {0};
     char buffer2[U_CELL_INFO_IMEI_SIZE + 1] = {0};
@@ -451,8 +459,8 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxBasic")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
@@ -507,12 +515,11 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxBasic")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test sockets over CMUX.
@@ -521,7 +528,7 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxSock")
 {
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
-    int32_t heapUsed;
+    int32_t resourceCount;
     uSockAddress_t echoServerAddress;
     int32_t w;
     int32_t y;
@@ -532,8 +539,8 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxSock")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     gTestPassed = false;
 
@@ -677,12 +684,11 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxSock")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test MQTT over CMUX.
@@ -691,7 +697,7 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxMqtt")
 {
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
-    int32_t heapUsed;
+    int32_t resourceCount;
     int32_t x;
     const char *pServerAddress = U_PORT_STRINGIFY_QUOTED(U_CELL_MUX_TEST_MQTT_SERVER_IP_ADDRESS);
     // +1 and zero init so that we can treat it as a string
@@ -705,8 +711,8 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxMqtt")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     gTestPassed = false;
 
@@ -820,12 +826,11 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxMqtt")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Test HTTP over CMUX.
@@ -835,7 +840,7 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxHttp")
     uDeviceHandle_t cellHandle;
     const uCellPrivateModule_t *pModule;
     int32_t httpHandle;
-    int32_t heapUsed;
+    int32_t resourceCount;
     char urlBuffer[64];
     // +1 and zero init so that we can treat it as a string
     char imeiBuffer[U_CELL_INFO_IMEI_SIZE + 1] = {0};
@@ -844,8 +849,8 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxHttp")
     // In case a previous test failed
     uCellTestPrivateCleanup(&gHandles);
 
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     gTestPassed = false;
 
@@ -860,7 +865,11 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxHttp")
     //lint -esym(613, pModule) Suppress possible use of NULL pointer
     // for pModule from now on
 
-    if (U_CELL_PRIVATE_HAS(pModule, U_CELL_PRIVATE_FEATURE_CMUX)) {
+    // For some reason clang complains about the two conditions in the
+    // if() check below being equivalent when they really not
+    // NOLINTNEXTLINE(misc-redundant-expression)
+    if (U_CELL_PRIVATE_HAS(pModule, U_CELL_PRIVATE_FEATURE_CMUX) &&
+        U_CELL_PRIVATE_HAS(pModule, U_CELL_PRIVATE_FEATURE_HTTP)) {
         // Create the complete URL from the IP address of the server
         // and the port number; testing with the domain name of the
         // server is done in the tests of u_http_client_test.c.
@@ -890,7 +899,10 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxHttp")
                                           gAllChars, sizeof(gAllChars)) == sizeof(gAllChars));
 
         // PUT something
-        gHttpCallbackData.pExpectedFirstLine = U_CELL_MUX_TEST_HTTP_FIRST_LINE_200;
+        gHttpCallbackData.pExpectedFirstLine = U_CELL_MUX_TEST_HTTP_FIRST_LINE_200_DEFAULT;
+        if (pModule->moduleType == U_CELL_MODULE_TYPE_LENA_R8) {
+            gHttpCallbackData.pExpectedFirstLine = U_CELL_MUX_TEST_HTTP_FIRST_LINE_200_LENA_R8;
+        }
         snprintf(pathBuffer, sizeof(pathBuffer), "/%s.html", imeiBuffer);
         U_TEST_PRINT_LINE("HTTP PUT file %s from file %s in the module file system...",
                           pathBuffer, U_CELL_MUX_TEST_HTTP_DATA_FILE_NAME);
@@ -940,8 +952,7 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxHttp")
 
         U_PORT_TEST_ASSERT(uCellNetDisconnect(cellHandle, NULL) == 0);
     } else {
-        U_TEST_PRINT_LINE("CMUX is not supported, not running tests.");
-        U_PORT_TEST_ASSERT(uCellMuxEnable(cellHandle) < 0);
+        U_TEST_PRINT_LINE("CMUX or HTTP is not supported, not running tests.");
     }
 
     gTestPassed = true;
@@ -950,99 +961,12 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxHttp")
     // test to speed things up
     uCellTestPrivatePostamble(&gHandles, false);
 
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
-
-# ifdef U_CFG_TEST_SECURITY_C2C_TE_SECRET
-
-/** Test C2C security over CMUX.
- */
-U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxC2c")
-{
-    uDeviceHandle_t cellHandle;
-    const uCellPrivateModule_t *pModule;
-    int32_t heapUsed;
-    char key[U_SECURITY_C2C_ENCRYPTION_KEY_LENGTH_BYTES];
-    char hmac[U_SECURITY_C2C_HMAC_TAG_LENGTH_BYTES];
-    int32_t y;
-
-    // In case a previous test failed
-    uCellTestPrivateCleanup(&gHandles);
-
-    // Obtain the initial heap size
-    heapUsed = uPortGetHeapFree();
-
-    gTestPassed = false;
-
-    // Do the standard preamble
-    U_PORT_TEST_ASSERT(uCellTestPrivatePreamble(U_CFG_TEST_CELL_MODULE_TYPE,
-                                                &gHandles, true) == 0);
-    cellHandle = gHandles.cellHandle;
-
-    // Get the private module data so that we can check for CMUX support
-    pModule = pUCellPrivateGetModule(cellHandle);
-    U_PORT_TEST_ASSERT(pModule != NULL);
-    //lint -esym(613, pModule) Suppress possible use of NULL pointer
-    // for pModule from now on
-
-    if (U_CELL_PRIVATE_HAS(pModule, U_CELL_PRIVATE_FEATURE_CMUX)) {
-
-        U_TEST_PRINT_LINE("enabling CMUX...\n");
-        U_PORT_TEST_ASSERT(uCellMuxEnable(cellHandle) == 0);
-
-        if (uCellSecIsSupported(cellHandle)) {
-            U_TEST_PRINT_LINE("C2C pairing...");
-            y = -1;
-            // Try this a few times as sometimes  +CME ERROR: SEC busy
-            // can be returned if we've just recently powered on
-            for (size_t x = 0; (y < 0) && (x < 3); x++) {
-                y = uCellSecC2cPair(cellHandle,
-                                    U_PORT_STRINGIFY_QUOTED(U_CFG_TEST_SECURITY_C2C_TE_SECRET),
-                                    key, hmac);
-                if (y < 0) {
-                    uPortTaskBlock(5000);
-                }
-            }
-            U_PORT_TEST_ASSERT(y == 0);
-
-            U_TEST_PRINT_LINE("opening a secure session...");
-            U_PORT_TEST_ASSERT(uCellSecC2cOpen(cellHandle,
-                                               U_PORT_STRINGIFY_QUOTED(U_CFG_TEST_SECURITY_C2C_TE_SECRET),
-                                               key, hmac) == 0);
-            U_TEST_PRINT_LINE("closing the session again...");
-            U_PORT_TEST_ASSERT(uCellSecC2cClose(cellHandle) == 0);
-        } else {
-            U_TEST_PRINT_LINE("C2C security is not supported, skipping test.");
-        }
-
-        U_TEST_PRINT_LINE("disabling CMUX...\n");
-        U_PORT_TEST_ASSERT(uCellMuxDisable(cellHandle) == 0);
-
-    } else {
-        U_TEST_PRINT_LINE("CMUX is not supported, not running tests.");
-        U_PORT_TEST_ASSERT(uCellMuxEnable(cellHandle) < 0);
-    }
-
-    gTestPassed = true;
-
-    // Do the standard postamble, leaving the module on for the next
-    // test to speed things up
-    uCellTestPrivatePostamble(&gHandles, false);
-
-    // Check for memory leaks
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
-}
-
-# endif // U_CFG_TEST_SECURITY_C2C_TE_SECRET
 
 /** Clean-up to be run at the end of this round of tests, just
  * in case there were test failures which would have resulted
@@ -1050,8 +974,6 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxC2c")
  */
 U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxCleanUp")
 {
-    int32_t x;
-
     if (!gTestPassed && (gHandles.cellHandle != NULL)) {
         // If anything failed above we are likely still in CMUX
         // mode so the clean-up is to do a hard reset or
@@ -1064,24 +986,12 @@ U_PORT_TEST_FUNCTION("[cellMux]", "cellMuxCleanUp")
     }
 
     uCellTestPrivateCleanup(&gHandles);
-
-    x = uPortTaskStackMinFree(NULL);
-    if (x != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d"
-                          " byte(s) free at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-    x = uPortGetHeapMinFree();
-    if (x >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free at"
-                          " the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 #endif // #if defined(U_CFG_TEST_CELL_MODULE_TYPE) && !defined(U_CFG_TEST_DISABLE_MUX)
+//  !defined(U_CFG_PPP_ENABLE)
 
 // End of file

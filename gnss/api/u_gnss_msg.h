@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -104,7 +104,8 @@ extern "C" {
  * This callback should be executed as quickly as possible to
  * avoid data loss.  The ONLY GNSS API calls that pCallback may make
  * are uGnssMsgReceiveCallbackRead() / uGnssMsgReceiveCallbackExtract(),
- * no others or you risk getting mutex-locked.
+ * and potentially pUGnssDecAlloc() / uGnssDecFree(), no others or
+ * you risk getting mutex-locked.
  *
  * If you are checking for a specific UBX-format message (i.e. no
  * wild-cards) and a NACK is received for that message then
@@ -137,13 +138,14 @@ extern "C" {
  * @param gnssHandle             the handle of the GNSS instance.
  * @param[out] pMessageId        a pointer to the message ID that was
  *                               detected.
- * @param errorCodeOrLength      the size of the message or, if
+ * @param errorCodeOrLength      the size of the message, including
+ *                               headers and checksums etc. or, if
  *                               pMessageId specifies a particular
  *                               UBX-format message (i.e. no wild-cards)
  *                               and a NACK was received for that
- *                               message, then #U_GNSS_ERROR_NACK
- *                               will be returned (and there will
- *                               be no message to read).
+ *                               message, then #U_GNSS_ERROR_NACK will
+ *                               be returned (and there will be no
+ *                               message to read).
  * @param[in,out] pCallbackParam the callback parameter that was originally
  *                               given to uGnssMsgReceiveStart().
  */
@@ -158,18 +160,19 @@ typedef void (*uGnssMsgReceiveCallback_t)(uDeviceHandle_t gnssHandle,
 
 /** Determine if a message ID is a wanted one.  For instance if
  * pMessageIdWanted is NULL or has the protocol type #U_GNSS_PROTOCOL_ALL
- * then true will always be returned, pMessageIdWanted has the
+ * then true will always be returned, if pMessageIdWanted has the
  * protocol type #U_GNSS_PROTOCOL_NMEA and an empty pNmea then
  * all NMEA message IDs will match, if pNmea contains "G" then
  * "GX" and "GAZZN" would match, if pMessageIdWanted has the
- * protocol type #U_GNSS_PROTOCOL_UBX and the message class
- * (upper byte) set to #U_GNSS_UBX_MESSAGE_CLASS_ALL then all UBX
- * format messages of that class will match, etc.
+ * protocol type #U_GNSS_PROTOCOL_UBX, message class (upper byte)
+ * 0x01 (UBX-NAV) and message ID (lower byte) set to
+ * #U_GNSS_UBX_MESSAGE_ID_ALL then all UBX format messages of
+ * the UBX-NAV class will match, etc.
  *
  * @param[in] pMessageId       the message ID to check.
  * @param[in] pMessageIdWanted the wanted message ID.
- *                             pMessageIdWanted, else false.
  * @return                     true if pMessageId is inside
+ *                             pMessageIdWanted, else false.
  */
 bool uGnssMsgIdIsWanted(uGnssMessageId_t *pMessageId,
                         uGnssMessageId_t *pMessageIdWanted);
@@ -258,6 +261,10 @@ int32_t uGnssMsgSend(uDeviceHandle_t gnssHandle,
  * if you used a wildcard in pMessageId and you don't want to decode
  * the message ID from the message yourself (e.g. in the case of a
  * UBX protocol message by using uUbxProtocolDecode()), then you
+ * can use pUGnssDecAlloc() / uGnssDecFree() which will always
+ * give you the protocol type and message ID (though it may give the
+ * error #U_ERROR_COMMON_NOT_SUPPORTED if pUGnssDecAlloc() happens not
+ * to support decoding the body of that kind of message), or you
  * could instead use uGnssMsgReceiveStart(), which does pass back
  * the decoded message ID to the pCallback.
  *
@@ -275,11 +282,12 @@ int32_t uGnssMsgSend(uDeviceHandle_t gnssHandle,
  *                               uGnssMsgReceiveStart()
  *                               mechanism instead.  Cannot be NULL.
  * @param[in,out] ppBuffer       a pointer to a pointer to a buffer
- *                               in which the message will be placed,
- *                               cannot be NULL.  If ppBuffer points
- *                               to NULL (i.e *ppBuffer is NULL) then
- *                               this function will allocate a buffer
- *                               of the correct size and populate
+ *                               in which the whole message, including
+ *                               headers and checksums etc., will be
+ *                               placed, cannot be NULL.  If ppBuffer
+ *                               points to NULL (i.e *ppBuffer is NULL)
+ *                               then this function will allocate a
+ *                               buffer of the correct size and populate
  *                               *ppBuffer with the allocated buffer
  *                               pointer; in this case IT IS UP TO
  *                               THE CALLER TO uPortFree(*ppBuffer) WHEN
@@ -342,11 +350,13 @@ int32_t uGnssMsgReceive(uDeviceHandle_t gnssHandle,
  *                               checksum, etc. will be included.
  *                               IMPORTANT: the ONLY GNSS API calls that
  *                               pCallback may make are
- *                               uGnssMsgReceiveCallbackRead() and
- *                               uGnssMsgReceiveCallbackExtract(), no others
- *                               or you risk getting mutex-locked. pCallback
- *                               is run in the context of a task with a stack
- *                               of size #U_GNSS_MSG_RECEIVE_TASK_STACK_SIZE_BYTES;
+ *                               uGnssMsgReceiveCallbackRead(),
+ *                               uGnssMsgReceiveCallbackExtract(), and
+ *                               potentially pUGnssDecAlloc() / uGnssDecFree(),
+ *                               no others or you risk getting mutex-locked.
+ *                               pCallback is run in the context of a task with
+ *                               a stack of size
+ *                               #U_GNSS_MSG_RECEIVE_TASK_STACK_SIZE_BYTES;
  *                               you may call uGnssMsgReceiveStackMinFree()
  *                               just before calling uGnssMsgReceiveStop()
  *                               to check if the remaining stack margin was
@@ -363,11 +373,12 @@ int32_t uGnssMsgReceiveStart(uDeviceHandle_t gnssHandle,
 
 /** To be called from the pCallback of uGnssMsgReceiveStart() to take
  * a peek at the message data from the internal ring buffer, copying it
- * into your buffer but NOT REMOVING IT from the internal ring buffer,
- * so that it is still there to be passed to any other of your pCallbacks.
- * This is the function you would normally use; if you have a long message
- * of specific interest to a single reader you may wish to use
- * uGnssMsgReceiveCallbackExtract() instead to get it out of the way.
+ * (including any headers and checksums) into your buffer but NOT REMOVING
+ * IT from the internal ring buffer, so that it is still there to be passed
+ * to any other of your pCallbacks. This is the function you would normally
+ * use; if you have a long message of specific interest to a single reader
+ * you may wish to use uGnssMsgReceiveCallbackExtract() instead to get it
+ * out of the way.
  *
  * IMPORTANT: this function can ONLY be called from the message receive
  * pCallback, it is NOT thread-safe to call it from anywhere else.
@@ -376,7 +387,7 @@ int32_t uGnssMsgReceiveStart(uDeviceHandle_t gnssHandle,
  * @param[out] pBuffer a place to put the message; cannot be NULL.
  * @param size         the amount of storage at pBuffer, should be
  *                     the size of the message, as indicated by the
- *                     pCallback "size" parameter.
+ *                     pCallback "errorCodeOrLength" parameter.
  * @return             on success the number of bytes read,
  *                     else negative error code.
  */
@@ -384,10 +395,11 @@ int32_t uGnssMsgReceiveCallbackRead(uDeviceHandle_t gnssHandle,
                                     char *pBuffer, size_t size);
 
 /** To be called from the pCallback of uGnssMsgReceiveStart()
- * to REMOVE a message from the internal ring buffer into your buffer;
- * once this is called the message will not be available to any of your
- * other pCallbacks.  Use this if the message you wish to read is very
- * large and you want to get it out of the way; normally you would use
+ * to REMOVE a whole message (including any headers and checksums) from
+ * the internal ring buffer into your buffer; once this is called the
+ * message will not be available to any of your other pCallbacks.  Use
+ * this if the message you wish to read is very large and you want to
+ * get it out of the way; normally you would use
  * uGnssMsgReceiveCallbackRead().
  *
  * IMPORTANT: this function can ONLY be called from the message

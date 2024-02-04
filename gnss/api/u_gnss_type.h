@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -76,7 +76,7 @@
 
 #ifndef U_GNSS_DEFAULT_SPI_FILL_THRESHOLD
 /** The default number of 0xFF bytes which, if received on an
- * SPI transport, constitue fill rather than valid data.
+ * SPI transport, constitute fill rather than valid data.
  */
 # define U_GNSS_DEFAULT_SPI_FILL_THRESHOLD 48
 #endif
@@ -144,7 +144,7 @@
 
 /** Make a UBX message type from a message class and message ID.
  */
-#define U_GNSS_UBX_MESSAGE(class, id) ((((uint16_t) (class)) << 8) | ((uint8_t) (id)))
+#define U_GNSS_UBX_MESSAGE(class, id) ((uint16_t) ((((uint16_t) (class)) << 8) | ((uint8_t) (id))))
 
 /* ----------------------------------------------------------------
  * TYPES
@@ -158,7 +158,9 @@
 //  Suppress not used within defaulted switch
 typedef enum {
     U_GNSS_TRANSPORT_NONE,
-    U_GNSS_TRANSPORT_UART,      /**< the transport handle should be a UART handle. */
+    U_GNSS_TRANSPORT_UART,      /**< the transport handle should be a UART handle;
+                                     see also #U_GNSS_TRANSPORT_UART_1 and
+                                     #U_GNSS_TRANSPORT_UART_2. */
     U_GNSS_TRANSPORT_AT,        /**< the transport handle should be an AT client
                                      handle; currently only UBX-format messages may
                                      be received when this transport type is in use.
@@ -170,11 +172,25 @@ typedef enum {
     U_GNSS_TRANSPORT_I2C,       /**< the transport handle should be an I2C handle. */
     U_GNSS_TRANSPORT_SPI,       /**< the transport handle should be an SPI handle. */
     U_GNSS_TRANSPORT_VIRTUAL_SERIAL, /**< the transport handle should be a virtual serial,
-                                          port handle, e.g. as returned by
+                                          port handle, for example as returned by
                                           uCellMuxAddChannel() if you are talking to
                                           a GNSS device either inside or connected
                                           via a cellular module. */
-    U_GNSS_TRANSPORT_MAX_NUM
+    U_GNSS_TRANSPORT_UART_2, /**< the transport handle should be a UART handle;
+                                  use this if your GNSS chip has two UART ports
+                                  and you are connected to the second one. */
+    U_GNSS_TRANSPORT_USB,    /**< the transport handle should STILL be a UART handle;
+                                  use this if your GNSS chip is connected via USB;
+                                  the UART driver will still be used. */
+    U_GNSS_TRANSPORT_MAX_NUM,
+    U_GNSS_TRANSPORT_UART_1 = U_GNSS_TRANSPORT_UART  /**< the transport handle should
+                                                          be a UART handle; equivalent
+                                                          to #U_GNSS_TRANSPORT_UART
+                                                          but you may wish to use this
+                                                          value if your GNSS chip has
+                                                          two UART ports and you want
+                                                          to distinguish between the
+                                                          two in your code. */
 } uGnssTransportType_t;
 
 /** The handle for the transport with types implied by
@@ -182,7 +198,8 @@ typedef enum {
  */
 typedef union {
     void *pAt;      /**< for transport type #U_GNSS_TRANSPORT_AT. */
-    int32_t uart;   /**< for transport type #U_GNSS_TRANSPORT_UART. */
+    int32_t uart;   /**< for transport types #U_GNSS_TRANSPORT_UART, #U_GNSS_TRANSPORT_UART_1,
+                         #U_GNSS_TRANSPORT_UART_2 and #U_GNSS_TRANSPORT_USB. */
     int32_t i2c;    /**< for transport type #U_GNSS_TRANSPORT_I2C. */
     int32_t spi;    /**< for transport type #U_GNSS_TRANSPORT_SPI. */
     void *pDeviceSerial; /**< for transport type #U_GNSS_TRANSPORT_VIRTUAL_SERIAL. */
@@ -249,6 +266,7 @@ typedef struct {
 } uGnssMessageId_t;
 
 /** The types of dynamic platform model; not all types are available on all modules.
+ * If you add a new model here, please also add it to u_gnss_fence.c.
  */
 typedef enum {
     U_GNSS_DYNAMIC_PORTABLE = 0,
@@ -298,7 +316,6 @@ typedef enum {
     U_GNSS_TIME_SYSTEM_NAVIC = 5
 } uGnssTimeSystem_t;
 
-
 /** The possible modes for RRLP capture; modes beyond
  * U_GNSS_RRLP_MODE_MEASX are only supported on M10 modules or later.
  * For guidance on how these modes may be used, see:
@@ -311,6 +328,26 @@ typedef enum {
     U_GNSS_RRLP_MODE_MEASC12 = 3,
     U_GNSS_RRLP_MODE_MEASD12 = 4
 } uGnssRrlpMode_t;
+
+/** The possible GNSS systems; not all GNSS systems are supported by all modules.
+ */
+typedef enum {
+    U_GNSS_SYSTEM_NONE = -1,
+    U_GNSS_SYSTEM_GPS = 0,
+    U_GNSS_SYSTEM_SBAS = 1,
+    U_GNSS_SYSTEM_GALILEO = 2,
+    U_GNSS_SYSTEM_BEIDOU = 3,
+    U_GNSS_SYSTEM_IMES = 4,
+    U_GNSS_SYSTEM_QZSS = 5,
+    U_GNSS_SYSTEM_GLONASS = 6
+} uGnssSystem_t;
+
+/** A GNSS space vehicle ID.
+ */
+typedef struct {
+    uGnssSystem_t system;
+    int32_t svId;
+} uGnssSvId_t;
 
 /** @}*/
 

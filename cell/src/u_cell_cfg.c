@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,13 +31,17 @@
 #include "stdlib.h"    // strol(), atoi(), strol(), strtof()
 #include "stddef.h"    // NULL, size_t etc.
 #include "stdint.h"    // int32_t etc.
+#include "stdio.h"     // snprintf()
 #include "stdbool.h"
 #include "string.h"    // memset()
+#include "time.h"      // time_t and struct tm
 
 #include "u_cfg_sw.h"
 
 #include "u_error_common.h"
 
+#include "u_port_clib_platform_specific.h" /* gmtime_r(), snprintf(), must be included
+                                              before the other port files. */
 #include "u_port_debug.h"
 #include "u_port_os.h"
 #include "u_port_heap.h"
@@ -68,90 +72,154 @@
  */
 static const int8_t gCellRatToModuleRatU201[] = {
     -1,  // Dummy value for U_CELL_NET_RAT_UNKNOWN_OR_NOT_USED
-        0,   // U_CELL_NET_RAT_GSM_GPRS_EGPRS: 2G
-        -1,  // U_CELL_NET_RAT_GSM_COMPACT
-        2,   // U_CELL_NET_RAT_UTRAN: 3G
-        -1,  // U_CELL_NET_RAT_EGPRS
-        -1,  // U_CELL_NET_RAT_HSDPA
-        -1,  // U_CELL_NET_RAT_HSUPA
-        -1,  // U_CELL_NET_RAT_HSDPA_HSUPA
-        -1,  // U_CELL_NET_RAT_LTE
-        -1,  // U_CELL_NET_RAT_EC_GSM
-        -1,  // U_CELL_NET_RAT_CATM1
-        -1   // U_CELL_NET_RAT_NB1
-    };
+    0,   // U_CELL_NET_RAT_GSM_GPRS_EGPRS: 2G
+    -1,  // U_CELL_NET_RAT_GSM_COMPACT
+    2,   // U_CELL_NET_RAT_UTRAN: 3G
+    -1,  // U_CELL_NET_RAT_EGPRS
+    -1,  // U_CELL_NET_RAT_HSDPA
+    -1,  // U_CELL_NET_RAT_HSUPA
+    -1,  // U_CELL_NET_RAT_HSDPA_HSUPA
+    -1,  // U_CELL_NET_RAT_LTE
+    -1,  // U_CELL_NET_RAT_EC_GSM
+    -1,  // U_CELL_NET_RAT_CATM1
+    -1,  // U_CELL_NET_RAT_NB1
+    -1,  // U_CELL_NET_RAT_GSM_UMTS
+    -1,  // U_CELL_NET_RAT_GSM_UMTS_LTE
+    -1,  // U_CELL_NET_RAT_GSM_LTE
+    -1   // U_CELL_NET_RAT_UMTS_LTE
+};
 
 /** Table to convert uCellNetRat_t to the value used in
  * CONFIGURING the module, SARA-R4/R5 form.
  */
 static const int8_t gCellRatToModuleRatR4R5[] = {
     -1, // Dummy value for U_CELL_NET_RAT_UNKNOWN_OR_NOT_USED
-        9,  // U_CELL_NET_RAT_GSM_GPRS_EGPRS: 2G
-        -1, // U_CELL_NET_RAT_GSM_COMPACT
-        -1, // U_CELL_NET_RAT_UTRAN: 3G
-        -1, // U_CELL_NET_RAT_EGPRS
-        -1, // U_CELL_NET_RAT_HSDPA
-        -1, // U_CELL_NET_RAT_HSUPA
-        -1, // U_CELL_NET_RAT_HSDPA_HSUPA
-        -1, // U_CELL_NET_RAT_LTE
-        -1, // U_CELL_NET_RAT_EC_GSM
-        7,  // U_CELL_NET_RAT_CATM1
-        8   // U_CELL_NET_RAT_NB1
-    };
+    9,  // U_CELL_NET_RAT_GSM_GPRS_EGPRS: 2G
+    -1, // U_CELL_NET_RAT_GSM_COMPACT
+    -1, // U_CELL_NET_RAT_UTRAN: 3G
+    -1, // U_CELL_NET_RAT_EGPRS
+    -1, // U_CELL_NET_RAT_HSDPA
+    -1, // U_CELL_NET_RAT_HSUPA
+    -1, // U_CELL_NET_RAT_HSDPA_HSUPA
+    -1, // U_CELL_NET_RAT_LTE
+    -1, // U_CELL_NET_RAT_EC_GSM
+    7,  // U_CELL_NET_RAT_CATM1
+    8,  // U_CELL_NET_RAT_NB1
+    -1, // U_CELL_NET_RAT_GSM_UMTS
+    -1, // U_CELL_NET_RAT_GSM_UMTS_LTE
+    -1, // U_CELL_NET_RAT_GSM_LTE
+    -1  // U_CELL_NET_RAT_UMTS_LTE
+};
 
 /** Table to convert uCellNetRat_t to the value used in
  * CONFIGURING the module, LARA-R6 form.
  */
 static const int8_t gCellRatToModuleRatR6[] = {
     -1, // Dummy value for U_CELL_NET_RAT_UNKNOWN_OR_NOT_USED
-        0,  // U_CELL_NET_RAT_GSM_GPRS_EGPRS: 2G
-        -1, // U_CELL_NET_RAT_GSM_COMPACT
-        2,  // U_CELL_NET_RAT_UTRAN: 3G
-        -1, // U_CELL_NET_RAT_EGPRS
-        -1, // U_CELL_NET_RAT_HSDPA
-        -1, // U_CELL_NET_RAT_HSUPA
-        -1, // U_CELL_NET_RAT_HSDPA_HSUPA
-        3,  // U_CELL_NET_RAT_LTE
-        -1, // U_CELL_NET_RAT_EC_GSM
-        -1, // U_CELL_NET_RAT_CATM1
-        -1  // U_CELL_NET_RAT_NB1
-    };
+    0,  // U_CELL_NET_RAT_GSM_GPRS_EGPRS: 2G
+    -1, // U_CELL_NET_RAT_GSM_COMPACT
+    2,  // U_CELL_NET_RAT_UTRAN: 3G
+    -1, // U_CELL_NET_RAT_EGPRS
+    -1, // U_CELL_NET_RAT_HSDPA
+    -1, // U_CELL_NET_RAT_HSUPA
+    -1, // U_CELL_NET_RAT_HSDPA_HSUPA
+    3,  // U_CELL_NET_RAT_LTE
+    -1, // U_CELL_NET_RAT_EC_GSM
+    -1, // U_CELL_NET_RAT_CATM1
+    -1, // U_CELL_NET_RAT_NB1
+    -1, // U_CELL_NET_RAT_GSM_UMTS
+    -1, // U_CELL_NET_RAT_GSM_UMTS_LTE
+    -1, // U_CELL_NET_RAT_GSM_LTE
+    -1  // U_CELL_NET_RAT_UMTS_LTE
+};
+
+/** Table to convert uCellNetRat_t to the value used in
+ * CONFIGURING the module, LENA-R8 form.
+ */
+static const int8_t gCellRatToModuleRatR8[] = {
+    -1, // Dummy value for U_CELL_NET_RAT_UNKNOWN_OR_NOT_USED
+    0,  // U_CELL_NET_RAT_GSM_GPRS_EGPRS: 2G
+    -1, // U_CELL_NET_RAT_GSM_COMPACT
+    2,  // U_CELL_NET_RAT_UTRAN: 3G
+    -1, // U_CELL_NET_RAT_EGPRS
+    -1, // U_CELL_NET_RAT_HSDPA
+    -1, // U_CELL_NET_RAT_HSUPA
+    -1, // U_CELL_NET_RAT_HSDPA_HSUPA
+    3,  // U_CELL_NET_RAT_LTE
+    -1, // U_CELL_NET_RAT_EC_GSM
+    -1, // U_CELL_NET_RAT_CATM1
+    -1, // U_CELL_NET_RAT_NB1
+    1,  // U_CELL_NET_RAT_GSM_UMTS
+    4,  // U_CELL_NET_RAT_GSM_UMTS_LTE
+    5,  // U_CELL_NET_RAT_GSM_LTE
+    6   // U_CELL_NET_RAT_UMTS_LTE
+};
 
 /** Table to convert uCellNetRat_t to the value used in
  * setting the bandmask, SARA-R4/R5 form.
  */
 static const int8_t gCellRatToModuleRatBandMaskR4R5[] = {
     -1, // Dummy value for U_CELL_NET_RAT_UNKNOWN_OR_NOT_USED
-        -1,  // U_CELL_NET_RAT_GSM_GPRS_EGPRS: 2G
-        -1, // U_CELL_NET_RAT_GSM_COMPACT
-        -1, // U_CELL_NET_RAT_UTRAN: 3G
-        -1, // U_CELL_NET_RAT_EGPRS
-        -1, // U_CELL_NET_RAT_HSDPA
-        -1, // U_CELL_NET_RAT_HSUPA
-        -1, // U_CELL_NET_RAT_HSDPA_HSUPA
-        -1, // U_CELL_NET_RAT_LTE
-        -1, // U_CELL_NET_RAT_EC_GSM
-        0,  // U_CELL_NET_RAT_CATM1
-        1   // U_CELL_NET_RAT_NB1
-    };
+    -1,  // U_CELL_NET_RAT_GSM_GPRS_EGPRS: 2G
+    -1, // U_CELL_NET_RAT_GSM_COMPACT
+    -1, // U_CELL_NET_RAT_UTRAN: 3G
+    -1, // U_CELL_NET_RAT_EGPRS
+    -1, // U_CELL_NET_RAT_HSDPA
+    -1, // U_CELL_NET_RAT_HSUPA
+    -1, // U_CELL_NET_RAT_HSDPA_HSUPA
+    -1, // U_CELL_NET_RAT_LTE
+    -1, // U_CELL_NET_RAT_EC_GSM
+    0,  // U_CELL_NET_RAT_CATM1
+    1,  // U_CELL_NET_RAT_NB1
+    -1, // U_CELL_NET_RAT_GSM_UMTS
+    -1, // U_CELL_NET_RAT_GSM_UMTS_LTE
+    -1, // U_CELL_NET_RAT_GSM_LTE
+    -1  // U_CELL_NET_RAT_UMTS_LTE
+};
 
 /** Table to convert uCellNetRat_t to the value used in
  * setting the bandmask, LARA-R6 form.
  */
 static const int8_t gCellRatToModuleRatBandMaskR6[] = {
     -1, // Dummy value for U_CELL_NET_RAT_UNKNOWN_OR_NOT_USED
-        2,  // U_CELL_NET_RAT_GSM_GPRS_EGPRS: 2G
-        -1, // U_CELL_NET_RAT_GSM_COMPACT
-        2,  // U_CELL_NET_RAT_UTRAN: 3G
-        -1, // U_CELL_NET_RAT_EGPRS
-        -1, // U_CELL_NET_RAT_HSDPA
-        -1, // U_CELL_NET_RAT_HSUPA
-        -1, // U_CELL_NET_RAT_HSDPA_HSUPA
-        3,  // U_CELL_NET_RAT_LTE
-        -1, // U_CELL_NET_RAT_EC_GSM
-        -1, // U_CELL_NET_RAT_CATM1
-        -1  // U_CELL_NET_RAT_NB1
-    };
+    2,  // U_CELL_NET_RAT_GSM_GPRS_EGPRS: 2G
+    -1, // U_CELL_NET_RAT_GSM_COMPACT
+    2,  // U_CELL_NET_RAT_UTRAN: 3G
+    -1, // U_CELL_NET_RAT_EGPRS
+    -1, // U_CELL_NET_RAT_HSDPA
+    -1, // U_CELL_NET_RAT_HSUPA
+    -1, // U_CELL_NET_RAT_HSDPA_HSUPA
+    3,  // U_CELL_NET_RAT_LTE
+    -1, // U_CELL_NET_RAT_EC_GSM
+    -1, // U_CELL_NET_RAT_CATM1
+    -1, // U_CELL_NET_RAT_NB1
+    -1, // U_CELL_NET_RAT_GSM_UMTS
+    -1, // U_CELL_NET_RAT_GSM_UMTS_LTE
+    -1, // U_CELL_NET_RAT_GSM_LTE
+    -1  // U_CELL_NET_RAT_UMTS_LTE
+};
+
+/** Table to convert uCellNetRat_t to the value used in
+ * setting the bandmask, LENA-R8 form.
+ */
+static const int8_t gCellRatToModuleRatBandMaskR8[] = {
+    -1, // Dummy value for U_CELL_NET_RAT_UNKNOWN_OR_NOT_USED
+    0,  // U_CELL_NET_RAT_GSM_GPRS_EGPRS: 2G
+    -1, // U_CELL_NET_RAT_GSM_COMPACT
+    2,  // U_CELL_NET_RAT_UTRAN: 3G
+    -1, // U_CELL_NET_RAT_EGPRS
+    -1, // U_CELL_NET_RAT_HSDPA
+    -1, // U_CELL_NET_RAT_HSUPA
+    -1, // U_CELL_NET_RAT_HSDPA_HSUPA
+    3,  // U_CELL_NET_RAT_LTE
+    -1, // U_CELL_NET_RAT_EC_GSM
+    -1, // U_CELL_NET_RAT_CATM1
+    -1, // U_CELL_NET_RAT_NB1
+    -1, // U_CELL_NET_RAT_GSM_UMTS
+    -1, // U_CELL_NET_RAT_GSM_UMTS_LTE
+    -1, // U_CELL_NET_RAT_GSM_LTE
+    -1  // U_CELL_NET_RAT_UMTS_LTE
+};
 
 /** Table to convert the RAT values used in the
  * module while reading the bandmask to uCellNetRat_t,
@@ -197,6 +265,9 @@ int8_t cellRatToModuleRat(uCellModuleType_t moduleType, uCellNetRat_t rat)
         case U_CELL_MODULE_TYPE_LARA_R6:
             moduleRat = gCellRatToModuleRatR6[(int32_t) rat];
             break;
+        case U_CELL_MODULE_TYPE_LENA_R8:
+            moduleRat = gCellRatToModuleRatR8[(int32_t) rat];
+            break;
         default:
             moduleRat = gCellRatToModuleRatR4R5[(int32_t) rat];
             break;
@@ -213,6 +284,9 @@ int8_t cellRatToModuleRatBandMask(uCellModuleType_t moduleType, uCellNetRat_t ra
     switch (moduleType) {
         case U_CELL_MODULE_TYPE_LARA_R6:
             moduleRat = gCellRatToModuleRatBandMaskR6[(int32_t) rat];
+            break;
+        case U_CELL_MODULE_TYPE_LENA_R8:
+            moduleRat = gCellRatToModuleRatBandMaskR8[(int32_t) rat];
             break;
         default:
             moduleRat = gCellRatToModuleRatBandMaskR4R5[(int32_t) rat];
@@ -235,6 +309,7 @@ uCellNetRat_t moduleRatBandMaskToCellRat(uCellModuleType_t moduleType, int32_t r
                     cellRat = gModuleRatBandMaskToCellRatR6[rat];
                 }
                 break;
+            // Don't need LENA-R8 as the form of the bandmask AT commands are different
             default:
                 if (rat < sizeof(gModuleRatBandMaskToCellRatR4R5) / sizeof(gModuleRatBandMaskToCellRatR4R5[0])) {
                     cellRat = gModuleRatBandMaskToCellRatR4R5[rat];
@@ -815,7 +890,7 @@ static int32_t setRatRankSaraRx(uCellPrivateInstance_t *pInstance,
  * -------------------------------------------------------------- */
 
 // Set, or unset, a greeting message.
-int32_t setGreeting(uAtClientHandle_t atHandle, const char *pStr)
+static int32_t setGreeting(uAtClientHandle_t atHandle, const char *pStr)
 {
     int32_t mode = 0;
 
@@ -835,7 +910,7 @@ int32_t setGreeting(uAtClientHandle_t atHandle, const char *pStr)
 
 // Get the current greeting message; a null
 // terminator will be included.
-int32_t getGreeting(uAtClientHandle_t atHandle, char *pStr, size_t size)
+static int32_t getGreeting(uAtClientHandle_t atHandle, char *pStr, size_t size)
 {
     int32_t errorCodeOrSize;
     int32_t mode;
@@ -899,7 +974,10 @@ static void GREETING_urc(uAtClientHandle_t atHandle, void *pParameter)
             pGreeting->cellHandle = pInstance->cellHandle;
             pGreeting->pCallback = pInstance->pGreetingCallback;
             pGreeting->pCallbackParameter = pInstance->pGreetingCallbackParameter;
-            uAtClientCallback(atHandle, greetingCallback, pGreeting);
+            if (uAtClientCallback(atHandle, greetingCallback, pGreeting) != 0) {
+                // Clean up on error
+                uPortFree(pGreeting);
+            }
         }
     }
 }
@@ -966,8 +1044,8 @@ static void removeGreetingUrc(uCellPrivateInstance_t *pInstance,
  * -------------------------------------------------------------- */
 
 // Set the baud rate in the cellular module and store it in NVM.
-int32_t setAndStoreBaudRate(const uCellPrivateInstance_t *pInstance,
-                            int32_t baudRate)
+static int32_t setAndStoreBaudRate(const uCellPrivateInstance_t *pInstance,
+                                   int32_t baudRate)
 {
     int32_t errorCode;
     uAtClientHandle_t atHandle = pInstance->atHandle;
@@ -996,6 +1074,43 @@ int32_t setAndStoreBaudRate(const uCellPrivateInstance_t *pInstance,
  * PUBLIC FUNCTIONS
  * -------------------------------------------------------------- */
 
+// Set the bands to be used by the cellular module: building the bandmask itself.
+int32_t uCellCfgSetBands(uDeviceHandle_t cellHandle,
+                         uCellNetRat_t rat,
+                         size_t numBands,
+                         uint8_t *pBands)
+{
+    int32_t errorCode = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
+    uint64_t bandMask1 = 0;
+    uint64_t bandMask2 = 0;
+    bool isValid = true;
+
+    if (pBands != NULL) {
+        for (size_t i = 0; i < numBands; i++) {
+            if (pBands[i] > 0) { //Valid band
+                if (pBands[i] <= 64) { //Populate Bandmask 1
+                    //subtracting 1 is due to the fact that band 1 maps on bit 0 and band 64 to bit 63
+                    bandMask1 |= 1ULL << ((pBands[i]) - 1);
+
+                } else if ((pBands[i] > 64) && (pBands[i] <= 128)) { //Populate bandmask 2
+                    //subtracting 1 is due to the fact that band 1 maps on bit 0
+                    bandMask2 |= 1ULL << ((pBands[i] - (sizeof(uint64_t) * 8)) - 1);
+                } else {
+                    uPortLog("U_CELL_CFG: invalid band: %d at location %d in the array.\n", pBands[i], i);
+                    isValid = false;
+                }
+            }
+        }
+    } else {
+        isValid = false;
+    }
+    if (isValid) {
+        errorCode = uCellCfgSetBandMask(cellHandle, rat, bandMask1, bandMask2);
+    }
+
+    return errorCode;
+}
+
 // Set the bands to be used by the cellular module.
 int32_t uCellCfgSetBandMask(uDeviceHandle_t cellHandle,
                             uCellNetRat_t rat,
@@ -1005,6 +1120,7 @@ int32_t uCellCfgSetBandMask(uDeviceHandle_t cellHandle,
     int32_t errorCode = (int32_t) U_ERROR_COMMON_NOT_INITIALISED;
     uCellPrivateInstance_t *pInstance;
     uAtClientHandle_t atHandle;
+    int32_t bandNumber;
 
     if (gUCellPrivateMutex != NULL) {
 
@@ -1025,13 +1141,69 @@ int32_t uCellCfgSetBandMask(uDeviceHandle_t cellHandle,
                          rat, cellRatToModuleRatBandMask(pInstance->pModule->moduleType, rat),
                          (uint32_t) (bandMask2 >> 32), (uint32_t) bandMask2,
                          (uint32_t) (bandMask1 >> 32), (uint32_t) bandMask1);
-                uAtClientLock(atHandle);
-                uAtClientCommandStart(atHandle, "AT+UBANDMASK=");
-                uAtClientWriteInt(atHandle, cellRatToModuleRatBandMask(pInstance->pModule->moduleType, rat));
-                uAtClientWriteUint64(atHandle, bandMask1);
-                uAtClientWriteUint64(atHandle, bandMask2);
-                uAtClientCommandStopReadResponse(atHandle);
-                errorCode = uAtClientUnlock(atHandle);
+                if (pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_LENA_R8) {
+                    errorCode = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
+                    if (rat == U_CELL_NET_RAT_LTE) {
+                        // For LTE, LENA-R8 uses the AT+SETLOCK command
+                        uAtClientLock(atHandle);
+                        uAtClientCommandStart(atHandle, "AT+SETLOCK=");
+                        if ((bandMask1 == 0) && (bandMask2 == 0)) {
+                            // For LENA-R8 an empty band mask means set all of them
+                            uAtClientWriteInt(atHandle, 0);
+                            uAtClientWriteInt(atHandle, 0); // Has to be present
+                        } else {
+                            // Configuring a selection of bands that is not all
+                            uAtClientWriteInt(atHandle, 1);
+                            uAtClientWriteInt(atHandle, 0); // Has to be present
+                            for (size_t x = 0; x < (sizeof(uint64_t) * 2 * 8); x++) {
+                                bandNumber = -1;
+                                if (x < (sizeof(uint64_t) * 8)) {
+                                    if ((1ULL << x) & bandMask1) {
+                                        bandNumber = x + 1; // +1 because bit position 0 is band 1
+                                    }
+                                } else {
+                                    if ((1ULL << (x - (sizeof(uint64_t) * 8))) & bandMask2) {
+                                        bandNumber = x + 1;
+                                    }
+                                }
+                                if (bandNumber >= 0) {
+                                    uAtClientWriteInt(atHandle, bandNumber);
+                                }
+                            }
+                        }
+                        uAtClientCommandStopReadResponse(atHandle);
+                        errorCode = uAtClientUnlock(atHandle);
+                    } else if (rat == U_CELL_NET_RAT_GSM_GPRS_EGPRS) {
+                        // For GSM, LENA-R8 uses the AT+SETBAND command
+                        bandNumber = -1;
+                        // Lots of -1's below because bit position 0 is band 1
+                        if ((bandMask1 & (1ULL << (3 - 1)) /* DCS1800 */) && (bandMask1 & (1ULL << (8 - 1)) /* 900 */)) {
+                            // Don't care about PCS1900 or 850: you get them for free if
+                            // you ask for both 900 and DCS1800
+                            bandNumber = 0;
+                        } else if (bandMask1 & (1ULL << (8 - 1)) /* 900 */) {
+                            bandNumber = 1;
+                        } else if (bandMask1 & (1ULL << (3 - 1)) /* DCS1800 */) {
+                            bandNumber = 2;
+                        }
+                        if (bandNumber >= 0) {
+                            uAtClientLock(atHandle);
+                            uAtClientCommandStart(atHandle, "AT+SETBAND=");
+                            uAtClientWriteInt(atHandle, bandNumber);
+                            uAtClientCommandStopReadResponse(atHandle);
+                            errorCode = uAtClientUnlock(atHandle);
+                        }
+                    }
+                } else {
+                    // Everything else uses the AT+UBANDMASK command
+                    uAtClientLock(atHandle);
+                    uAtClientCommandStart(atHandle, "AT+UBANDMASK=");
+                    uAtClientWriteInt(atHandle, cellRatToModuleRatBandMask(pInstance->pModule->moduleType, rat));
+                    uAtClientWriteUint64(atHandle, bandMask1);
+                    uAtClientWriteUint64(atHandle, bandMask2);
+                    uAtClientCommandStopReadResponse(atHandle);
+                    errorCode = uAtClientUnlock(atHandle);
+                }
                 if (errorCode == 0) {
                     pInstance->rebootIsRequired = true;
                 }
@@ -1060,7 +1232,8 @@ int32_t uCellCfgGetBandMask(uDeviceHandle_t cellHandle,
     uint64_t masks[2][2];
     int32_t rats[2];
     bool success = true;
-    size_t count = 0;
+    int32_t count = 0;
+    int32_t bandNumber;
 
     if (gUCellPrivateMutex != NULL) {
 
@@ -1087,82 +1260,153 @@ int32_t uCellCfgGetBandMask(uDeviceHandle_t cellHandle,
             atHandle = pInstance->atHandle;
             uPortLog("U_CELL_CFG: getting band mask for RAT %d (in module terms %d).\n",
                      rat, cellRatToModuleRatBandMask(pInstance->pModule->moduleType, rat));
-            uAtClientLock(atHandle);
-            uAtClientCommandStart(atHandle, "AT+UBANDMASK?");
-            uAtClientCommandStop(atHandle);
-            uAtClientResponseStart(atHandle, "+UBANDMASK:");
-            // The AT response here can be any one of the following:
-            //    0        1             2             3           4                 5
-            // <rat_a>,<bandmask_a0>
-            // <rat_a>,<bandmask_a0>,<bandmask_a1>
-            // <rat_a>,<bandmask_a0>,<rat_b>,      <bandmask_b0>
-            // <rat_a>,<bandmask_a0>,<bandmask_a1>,<rat_b>,      <bandmask_b0>
-            // <rat_a>,<bandmask_a0>,<rat_b>,      <bandmask_b0>,<bandmask_b1>                  <-- ASSUMED THIS CANNOT HAPPEN!!!
-            // <rat_a>,<bandmask_a0>,<bandmask_a1>,<rat_b>,      <bandmask_b0>,  <bandmask_b1>
-            //
-            // Since each entry is just a decimal number, how to tell which format
-            // is being used?
-            //
-            // Here's my algorithm:
-            // i.   Read i0 and i1, <rat_a> and <bandmask_a0>.
-            // ii.  Attempt to read i2: if is present it could be
-            //      <bandmask_a1> or <rat_b>, if not FINISH.
-            // iii. Attempt to read i3: if it is present then it is
-            //      either <bandmask_b0> or <rat_b>, if it
-            //      is not present then the i2 was <bandmask_a1> FINISH.
-            // iv.  Attempt to read i4 : if it is present then i2
-            //      was <bandmask_a1>, i3 was <rat_b> and i4 is
-            //      <bandmask_b0>, if it is not present then i2 was
-            //      <rat_b> and i3 was <bandmask_b0> FINISH.
-            // v.   Attempt to read i5: if it is present then it is
-            //      <bandmask_b1>.
-
-            // Read all the numbers in
-            for (size_t x = 0; (x < sizeof(i) / sizeof(i[0])) && success; x++) {
-                success = (uAtClientReadUint64(atHandle, &(i[x])) == 0);
-                if (success) {
-                    count++;
-                }
-            }
-            uAtClientResponseStop(atHandle);
-            uAtClientUnlock(atHandle);
-
-            // Point i, nice and simple, <rat_a> and <bandmask_a0>.
-            if (count >= 2) {
-                rats[0] = (int32_t) i[0];
-                masks[0][0] = i[1];
-            }
-            if (count >= 3) {
-                // Point ii, the "present" part.
-                if (count >= 4) {
-                    // Point iii, the "present" part.
-                    if (count >= 5) {
-                        // Point iv, the "present" part, <bandmask_a1>,
-                        // <rat_b> and <bandmask_b1>.
-                        masks[0][1] = i[2];
-                        rats[1] = (int32_t) i[3];
-                        masks[1][0] = i[4];
-                        if (count >= 6) {
-                            // Point v, <bandmask_b1>.
-                            masks[1][1] = i[5];
-                        }
-                    } else {
-                        // Point iv, the "not present" part, <rat_b>
-                        // and <bandmask_b0>.
-                        rats[1] = (int32_t) i[2];
-                        masks[1][0] = i[3];
+            if (pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_LENA_R8) {
+                errorCode = (int32_t) U_ERROR_COMMON_NOT_SUPPORTED;
+                if (rat == U_CELL_NET_RAT_LTE) {
+                    // For LTE, LENA-R8 uses the AT+SETLOCK command
+                    rats[0] = rat;
+                    uAtClientLock(atHandle);
+                    uAtClientCommandStart(atHandle, "AT+SETLOCK=");
+                    uAtClientWriteInt(atHandle, 2); // Read
+                    uAtClientWriteInt(atHandle, 0); // Has to be present
+                    uAtClientCommandStop(atHandle);
+                    uAtClientResponseStart(atHandle, "+SETLOCK:");
+                    // The first parameter is the number of parameters to follow,
+                    // where 0 means "all of the bands are enabled"
+                    count = uAtClientReadInt(atHandle);
+                    if (count > sizeof(i) / sizeof(i[0])) {
+                        count = sizeof(i) / sizeof(i[0]);
                     }
-                } else {
-                    // Point iii, the "not present" part, <bandmask_a1>.
-                    masks[0][1] = i[2];
+                    for (int32_t x = 0; x < count; x++) {
+                        bandNumber = uAtClientReadInt(atHandle);
+                        i[x] = bandNumber;
+                    }
+                    uAtClientResponseStop(atHandle);
+                    errorCode = uAtClientUnlock(atHandle);
+                    if ((errorCode == 0) && (count >= 0)) {
+                        masks[0][0] = 0;
+                        masks[0][1] = 0;
+                        if (count > 0) {
+                            for (int32_t x = 0; x < count; x++) {
+                                if (i[x] <= sizeof(uint64_t) * 8) {
+                                    masks[0][0] |= 1ULL << (i[x] - 1); // -1 'cos bit position 0 is band 1
+                                } else {
+                                    masks[0][1] |= 1ULL << (i[x] - 1 - ( sizeof(uint64_t) * 8));
+                                }
+                            }
+                        }
+                    }
+                } else if (rat == U_CELL_NET_RAT_GSM_GPRS_EGPRS) {
+                    // For GSM, LENA-R8 uses the AT+SETBAND command
+                    rats[0] = rat;
+                    uAtClientLock(atHandle);
+                    uAtClientCommandStart(atHandle, "AT+SETBAND?");
+                    uAtClientCommandStop(atHandle);
+                    uAtClientResponseStart(atHandle, "+SETBAND:");
+                    bandNumber = uAtClientReadInt(atHandle);
+                    uAtClientResponseStop(atHandle);
+                    errorCode = uAtClientUnlock(atHandle);
+                    if ((errorCode == 0) && (bandNumber >= 0)) {
+                        masks[0][0] = 0;
+                        masks[0][1] = 0;
+                        switch (bandNumber) {
+                            case 0:
+                                // PCS1900, DCS1800, 850 and 900,
+                                // -1's because bit position 0 is band 1
+                                masks[0][0] = (1ULL << (2 - 1)) | (1ULL << (3 - 1)) | (1ULL << (5 - 1)) | (1ULL << (8 - 1));
+                                break;
+                            case 1:
+                                // 900
+                                masks[0][0] = 1ULL << (8 - 1);
+                                break;
+                            case 2:
+                                // DCS1800
+                                masks[0][0] = 1ULL << (3 - 1);
+                                break;
+                            default:
+                                break;
+                        }
+                    }
                 }
             } else {
-                // Point ii, the "not present" part, FINISH.
-            }
+                // Everything else uses the AT+UBANDMASK command
+                uAtClientLock(atHandle);
+                uAtClientCommandStart(atHandle, "AT+UBANDMASK?");
+                uAtClientCommandStop(atHandle);
+                uAtClientResponseStart(atHandle, "+UBANDMASK:");
+                // The AT response here can be any one of the following:
+                //    0        1             2             3           4                 5
+                // <rat_a>,<bandmask_a0>
+                // <rat_a>,<bandmask_a0>,<bandmask_a1>
+                // <rat_a>,<bandmask_a0>,<rat_b>,      <bandmask_b0>
+                // <rat_a>,<bandmask_a0>,<bandmask_a1>,<rat_b>,      <bandmask_b0>
+                // <rat_a>,<bandmask_a0>,<rat_b>,      <bandmask_b0>,<bandmask_b1>                  <-- ASSUMED THIS CANNOT HAPPEN!!!
+                // <rat_a>,<bandmask_a0>,<bandmask_a1>,<rat_b>,      <bandmask_b0>,  <bandmask_b1>
+                //
+                // Since each entry is just a decimal number, how to tell which format
+                // is being used?
+                //
+                // Here's my algorithm:
+                // i.   Read i0 and i1, <rat_a> and <bandmask_a0>.
+                // ii.  Attempt to read i2: if is present it could be
+                //      <bandmask_a1> or <rat_b>, if not FINISH.
+                // iii. Attempt to read i3: if it is present then it is
+                //      either <bandmask_b0> or <rat_b>, if it
+                //      is not present then the i2 was <bandmask_a1> FINISH.
+                // iv.  Attempt to read i4 : if it is present then i2
+                //      was <bandmask_a1>, i3 was <rat_b> and i4 is
+                //      <bandmask_b0>, if it is not present then i2 was
+                //      <rat_b> and i3 was <bandmask_b0> FINISH.
+                // v.   Attempt to read i5: if it is present then it is
+                //      <bandmask_b1>.
 
-            // Convert the RAT numbering to keep things simple on the brain
-            for (size_t x = 0; x < sizeof(rats) / sizeof(rats[0]); x++) {
-                rats[x] = (int32_t) moduleRatBandMaskToCellRat(pInstance->pModule->moduleType, rats[x]);
+                // Read all the numbers in
+                for (size_t x = 0; (x < sizeof(i) / sizeof(i[0])) && success; x++) {
+                    success = (uAtClientReadUint64(atHandle, &(i[x])) == 0);
+                    if (success) {
+                        count++;
+                    }
+                }
+                uAtClientResponseStop(atHandle);
+                uAtClientUnlock(atHandle);
+
+                // Point i, nice and simple, <rat_a> and <bandmask_a0>.
+                if (count >= 2) {
+                    rats[0] = (int32_t) i[0];
+                    masks[0][0] = i[1];
+                }
+                if (count >= 3) {
+                    // Point ii, the "present" part.
+                    if (count >= 4) {
+                        // Point iii, the "present" part.
+                        if (count >= 5) {
+                            // Point iv, the "present" part, <bandmask_a1>,
+                            // <rat_b> and <bandmask_b1>.
+                            masks[0][1] = i[2];
+                            rats[1] = (int32_t) i[3];
+                            masks[1][0] = i[4];
+                            if (count >= 6) {
+                                // Point v, <bandmask_b1>.
+                                masks[1][1] = i[5];
+                            }
+                        } else {
+                            // Point iv, the "not present" part, <rat_b>
+                            // and <bandmask_b0>.
+                            rats[1] = (int32_t) i[2];
+                            masks[1][0] = i[3];
+                        }
+                    } else {
+                        // Point iii, the "not present" part, <bandmask_a1>.
+                        masks[0][1] = i[2];
+                    }
+                } else {
+                    // Point ii, the "not present" part, FINISH.
+                }
+
+                // Convert the RAT numbering to keep things simple on the brain
+                for (size_t x = 0; x < sizeof(rats) / sizeof(rats[0]); x++) {
+                    rats[x] = (int32_t) moduleRatBandMaskToCellRat(pInstance->pModule->moduleType, rats[x]);
+                }
             }
 
             if (pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_LARA_R6) {
@@ -1726,7 +1970,13 @@ int32_t uCellCfgGetGreeting(uDeviceHandle_t cellHandle, char *pStr, size_t size)
             errorCodeOrSize = getGreeting(pInstance->atHandle, pStr, size);
             if (errorCodeOrSize > 0) {
                 uPortLog("U_CELL_CFG: greeting message is \"%s\".\n", pStr);
-            } else if (errorCodeOrSize == 0) {
+                // Note: LENA-R8 returns ERROR to AT+CGST? if the greeting
+                // message is switched off, hence the extra condition below
+            } else if ((errorCodeOrSize == 0) ||
+                       ((errorCodeOrSize < 0) &&
+                        (pInstance->pModule->moduleType == U_CELL_MODULE_TYPE_LENA_R8))) {
+                errorCodeOrSize = (int32_t) U_ERROR_COMMON_SUCCESS;
+                *pStr = 0;
                 uPortLog("U_CELL_CFG: no greeting message is set.\n");
             } else {
                 uPortLog("U_CELL_CFG: unable to read greeting message.\n");
@@ -1910,6 +2160,52 @@ int32_t uCellCfgGetGnssProfile(uDeviceHandle_t cellHandle, char *pServerName,
     }
 
     return errorCodeOrBitMap;
+}
+
+// Set the time in the cellular module.
+int64_t uCellCfgSetTime(uDeviceHandle_t cellHandle, int64_t timeLocal,
+                        int32_t timeZoneSeconds)
+{
+    int32_t errorCode = (int32_t) U_ERROR_COMMON_NOT_INITIALISED;
+    uCellPrivateInstance_t *pInstance;
+    uAtClientHandle_t atHandle;
+    struct tm tmStruct;
+    char buffer[32];
+
+    if (gUCellPrivateMutex != NULL) {
+
+        U_PORT_MUTEX_LOCK(gUCellPrivateMutex);
+
+        errorCode = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
+        pInstance = pUCellPrivateGetInstance(cellHandle);
+        // The format is "yy/MM/dd,hh:mm:ss+TZ" where +TZ is
+        // in quarter hours.  First get the time in a struct
+        if ((pInstance != NULL) && gmtime_r((const time_t *) &timeLocal, &tmStruct) != NULL) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+            int32_t ignored = snprintf(buffer, sizeof(buffer), "%02d/%02d/%02d,%02d:%02d:%02d%c%02d",
+                                       tmStruct.tm_year % 100, tmStruct.tm_mon + 1, tmStruct.tm_mday,
+                                       tmStruct.tm_hour, tmStruct.tm_min, tmStruct.tm_sec,
+                                       timeZoneSeconds >= 0 ? '+' : '-', // Do this cos %+02d doesn't fill with zeroes as it should
+                                       timeZoneSeconds >= 0 ? (int) timeZoneSeconds / (15 * 60) : (int) - timeZoneSeconds / (15 * 60));
+            // This to stop GCC 12.3.0 complaining that variables printed into buffer are being truncated
+            (void) ignored;
+#pragma GCC diagnostic pop
+            atHandle = pInstance->atHandle;
+            uAtClientLock(atHandle);
+            uAtClientCommandStart(atHandle, "AT+CCLK=");
+            uAtClientWriteString(atHandle, buffer, true);
+            uAtClientCommandStopReadResponse(atHandle);
+            errorCode = uAtClientUnlock(atHandle);
+            if (errorCode == 0) {
+                uPortLog("U_CELL_CFG: time set to %s.\n", buffer);
+            }
+        }
+
+        U_PORT_MUTEX_UNLOCK(gUCellPrivateMutex);
+    }
+
+    return errorCode;
 }
 
 // End of file

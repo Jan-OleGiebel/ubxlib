@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -63,7 +63,19 @@ extern "C" {
  * i.e. from __FILE__, the second parameter is the line number in
  * pFileStr where the assert failure occurred, i.e. from __LINE__.
  */
-typedef void (upAssertFailed_t) (const char *pFileStr, int32_t line);
+typedef void (uAssertFailed_t) (const char *pFileStr, int32_t line);
+
+/** \deprecated The function signature for the assertFailed()
+ * callback.   The first parameter is a pointer to the name and
+ * path of the file where the assert failure occurred as a
+ * null-terminated string, i.e. from __FILE__, the second parameter
+ * is the line number in pFileStr where the assert failure occurred,
+ * i.e. from __LINE__.
+ *
+ * This type is deprecated, and will be removed at some point in
+ * the future, please use uAssertFailed_t instead.
+ */
+U_DEPRECATED typedef uAssertFailed_t upAssertFailed_t;
 
 /* ----------------------------------------------------------------
  * FUNCTIONS
@@ -74,13 +86,15 @@ typedef void (upAssertFailed_t) (const char *pFileStr, int32_t line);
  * with the file string and line number of the assert; no other
  * action will be taken, it is entirely up to the pAssertFailed function
  * to do whatever it wishes (print something log, something, restart
- * the system, etc.).  If the pAssertFailed function returns then
- * code execution will resume at the line after the assert failure
- * occurred.
+ * the system, etc.).  After the assert function has been called
+ * an infinite loop will be entered.  If you wish to have your assert
+ * function return while testing, you may do so by defining
+ * U_ASSERT_HOOK_FUNCTION_TEST_RETURN: code execution will then resume
+ * at the line after the assert failure occurred.
  *
  * @param[in] pAssertFailed the assert failure function to register.
  */
-void uAssertHookSet(upAssertFailed_t *pAssertFailed);
+void uAssertHookSet(uAssertFailed_t *pAssertFailed);
 
 /** The default assertFailed() function.  If no assert hook has been
  * registered (with uAssertHookSet()) then the assertFailed() function
@@ -95,8 +109,11 @@ void uAssertHookSet(upAssertFailed_t *pAssertFailed);
  */
 //lint -function(exit, uAssertFailed) tell Lint that this has the same
 // properties as exit()
+#ifndef U_ASSERT_HOOK_FUNCTION_TEST_RETURN
 U_NO_RETURN void uAssertFailed(const char *pFileStr, int32_t line);
-
+#else
+void uAssertFailed(const char *pFileStr, int32_t line);
+#endif
 #ifdef __cplusplus
 }
 #endif

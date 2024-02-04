@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -93,10 +93,12 @@ void uPortI2cDeinit();
  * @param i2c            the I2C HW block to use.
  * @param pinSda         the data pin, a positive integer or -1 if
  *                       the pin choice has already been determined
- *                       at compile time.
+ *                       at compile time or is irrelevant (for
+ *                       example Zephyr and Linux).
  * @param pinSdc         the clock pin, a positive integer or -1
  *                       if the pin choice has already been
- *                       determined at compile time.
+ *                       determined at compile time or is irrelevant
+ *                       (for example Zephyr and Linux).
  * @param controller     set to true for an I2C controller; this is for
  *                       forwards-compatibility only, it must currently
  *                       always be set to true since target/peripheral/
@@ -304,6 +306,15 @@ int32_t uPortI2cControllerSendReceive(int32_t handle, uint16_t address,
 int32_t uPortI2cControllerSend(int32_t handle, uint16_t address,
                                const char *pSend, size_t bytesToSend,
                                bool noStop);
+
+/** Get the number of I2C interfaces currently open; this may be used
+ * as a basic check for heap monitoring.
+ *
+ * You do not need to implement this function: where it is not
+ * implemented a #U_WEAK implementation provided in u_port_resource.c will
+ * return zero.
+ */
+int32_t uPortI2cResourceAllocCount();
 
 #ifdef __cplusplus
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -139,7 +139,7 @@ extern "C" {
  *                                      establishment will stop when
  *                                      #U_LOCATION_TIMEOUT_SECONDS have
  *                                      elapsed.  The single int32_t
- *                                      parameter is the network handle.
+ *                                      parameter is the device handle.
  */
 int32_t uLocationPrivateCloudLocate(uDeviceHandle_t devHandle,
                                     uDeviceHandle_t gnssDevHandle,

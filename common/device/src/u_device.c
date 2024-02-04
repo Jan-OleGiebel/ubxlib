@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,12 +29,15 @@
 #include "u_error_common.h"
 
 #include "u_port_os.h"
+#include "u_port_board_cfg.h"
 
 #include "u_device.h"
 #include "u_device_shared.h"
 
 #include "u_location.h"
 #include "u_location_shared.h"
+
+#include "u_network_shared.h"
 
 #include "u_device_private.h"
 #include "u_device_private_cell.h"
@@ -49,7 +52,6 @@
 #include "u_cell.h"
 #include "u_short_range.h"
 #include "u_gnss_type.h"
-
 
 /* ----------------------------------------------------------------
  * COMPILE-TIME MACROS
@@ -194,6 +196,7 @@ int32_t uDeviceGetDefaults(uDeviceType_t deviceType,
                 pDeviceCfg->transportCfg.cfgUart.pinRts = U_CFG_APP_PIN_CELL_RTS;
                 pDeviceCfg->transportCfg.cfgUart.pinRxd = U_CFG_APP_PIN_CELL_RXD;
                 pDeviceCfg->transportCfg.cfgUart.pinTxd = U_CFG_APP_PIN_CELL_TXD;
+                pDeviceCfg->transportCfg.cfgUart.pPrefix = NULL; // Relevant for Linux only
                 break;
 
             case U_DEVICE_TYPE_SHORT_RANGE:
@@ -209,6 +212,7 @@ int32_t uDeviceGetDefaults(uDeviceType_t deviceType,
                 pDeviceCfg->transportCfg.cfgUart.pinRts = U_CFG_APP_PIN_SHORT_RANGE_RTS;
                 pDeviceCfg->transportCfg.cfgUart.pinRxd = U_CFG_APP_PIN_SHORT_RANGE_RXD;
                 pDeviceCfg->transportCfg.cfgUart.pinTxd = U_CFG_APP_PIN_SHORT_RANGE_TXD;
+                pDeviceCfg->transportCfg.cfgUart.pPrefix = NULL; // Relevant for Linux only
                 break;
 
             case U_DEVICE_TYPE_GNSS:
@@ -237,6 +241,7 @@ int32_t uDeviceGetDefaults(uDeviceType_t deviceType,
                 pDeviceCfg->transportCfg.cfgUart.pinRts = U_CFG_APP_PIN_GNSS_RTS;
                 pDeviceCfg->transportCfg.cfgUart.pinRxd = U_CFG_APP_PIN_GNSS_RXD;
                 pDeviceCfg->transportCfg.cfgUart.pinTxd = U_CFG_APP_PIN_GNSS_TXD;
+                pDeviceCfg->transportCfg.cfgUart.pPrefix = NULL; // Relevant for Linux only
                 break;
 
             default:
@@ -252,43 +257,57 @@ int32_t uDeviceGetDefaults(uDeviceType_t deviceType,
 
 int32_t uDeviceOpen(const uDeviceCfg_t *pDeviceCfg, uDeviceHandle_t *pDeviceHandle)
 {
+    uDeviceCfg_t localDeviceCfg = {0};
     // Lock the API
     int32_t errorCode = uDeviceLock();
 
+    uDeviceHandle_t deviceHandleCandidate = NULL;
+
     if (errorCode == 0 && pDeviceCfg != NULL) {
         errorCode = uDeviceCallback("open", (void *)pDeviceCfg->deviceType, NULL);
+        localDeviceCfg = *pDeviceCfg;
+    }
+
+    if (errorCode == 0) {
+        // Allow the device configuration from the board
+        // configuration of the platform to override what
+        // we were given; only used by Zephyr
+        errorCode = uPortBoardCfgDevice(&localDeviceCfg);
     }
 
     if (errorCode == 0) {
         errorCode = (int32_t) U_ERROR_COMMON_INVALID_PARAMETER;
-        if ((pDeviceCfg != NULL) && (pDeviceCfg->version == 0) && (pDeviceHandle != NULL)) {
-            switch (pDeviceCfg->deviceType) {
+        if ((pDeviceHandle != NULL) && (localDeviceCfg.version == 0)) {
+            switch (localDeviceCfg.deviceType) {
                 case U_DEVICE_TYPE_CELL:
-                    errorCode = uDevicePrivateCellAdd(pDeviceCfg, pDeviceHandle);
+                    errorCode = uDevicePrivateCellAdd(&localDeviceCfg, &deviceHandleCandidate);
                     if (errorCode == 0) {
-                        U_DEVICE_INSTANCE(*pDeviceHandle)->moduleType = pDeviceCfg->deviceCfg.cfgCell.moduleType;
+                        U_DEVICE_INSTANCE(deviceHandleCandidate)->moduleType = localDeviceCfg.deviceCfg.cfgCell.moduleType;
                     }
                     break;
                 case U_DEVICE_TYPE_GNSS:
-                    errorCode = uDevicePrivateGnssAdd(pDeviceCfg, pDeviceHandle);
+                    errorCode = uDevicePrivateGnssAdd(&localDeviceCfg, &deviceHandleCandidate);
                     if (errorCode == 0) {
-                        U_DEVICE_INSTANCE(*pDeviceHandle)->moduleType = pDeviceCfg->deviceCfg.cfgGnss.moduleType;
+                        U_DEVICE_INSTANCE(deviceHandleCandidate)->moduleType = localDeviceCfg.deviceCfg.cfgGnss.moduleType;
                     }
                     break;
                 case U_DEVICE_TYPE_SHORT_RANGE:
-                    errorCode = uDevicePrivateShortRangeAdd(pDeviceCfg, pDeviceHandle);
+                    errorCode = uDevicePrivateShortRangeAdd(&localDeviceCfg, &deviceHandleCandidate);
                     if (errorCode == 0) {
-                        U_DEVICE_INSTANCE(*pDeviceHandle)->moduleType = pDeviceCfg->deviceCfg.cfgSho.moduleType;
+                        U_DEVICE_INSTANCE(deviceHandleCandidate)->moduleType = localDeviceCfg.deviceCfg.cfgSho.moduleType;
                     }
                     break;
                 case U_DEVICE_TYPE_SHORT_RANGE_OPEN_CPU:
-                    errorCode = uDevicePrivateShortRangeOpenCpuAdd(pDeviceCfg, pDeviceHandle);
+                    errorCode = uDevicePrivateShortRangeOpenCpuAdd(&localDeviceCfg, &deviceHandleCandidate);
                     if (errorCode == 0) {
-                        U_DEVICE_INSTANCE(*pDeviceHandle)->moduleType = pDeviceCfg->deviceCfg.cfgSho.moduleType;
+                        U_DEVICE_INSTANCE(deviceHandleCandidate)->moduleType = localDeviceCfg.deviceCfg.cfgSho.moduleType;
                     }
                     break;
                 default:
                     break;
+            }
+            if (errorCode == 0) {
+                U_DEVICE_INSTANCE(deviceHandleCandidate)->pCfgName = localDeviceCfg.pCfgName;
             }
         }
 
@@ -296,16 +315,23 @@ int32_t uDeviceOpen(const uDeviceCfg_t *pDeviceCfg, uDeviceHandle_t *pDeviceHand
         uDeviceUnlock();
     }
 
+    if (errorCode == 0) {
+        *pDeviceHandle = deviceHandleCandidate;
+    }
+
     return errorCode;
 }
 
 int32_t uDeviceClose(uDeviceHandle_t devHandle, bool powerOff)
 {
-    // Lock the API
-    int32_t errorCode = uDeviceLock();
+    int32_t errorCode;
+    uDeviceType_t deviceType;
 
+    // Lock the API
+    errorCode = uDeviceLock();
     if (errorCode == 0) {
-        switch (uDeviceGetDeviceType(devHandle)) {
+        deviceType = uDeviceGetDeviceType(devHandle);
+        switch (deviceType) {
             case U_DEVICE_TYPE_CELL:
                 errorCode = uDevicePrivateCellRemove(devHandle, powerOff);
                 break;
@@ -328,8 +354,11 @@ int32_t uDeviceClose(uDeviceHandle_t devHandle, bool powerOff)
         }
 
         if (errorCode == 0) {
-            errorCode = uDeviceCallback("close", (void *)(U_DEVICE_INSTANCE(devHandle)->deviceType),
-                                        (void *)powerOff);
+            void *pDeviceType = (void *) deviceType;
+            void *pPowerOff = (void *) powerOff;
+            errorCode = uDeviceCallback("close", pDeviceType, pPowerOff);
+            // Free any storage allocated for network configuration data
+            uNetworkCfgFree(devHandle);
         }
 
         // ...and done
@@ -337,6 +366,26 @@ int32_t uDeviceClose(uDeviceHandle_t devHandle, bool powerOff)
     }
 
     return errorCode;
+}
+
+void uDeviceSetUserContext(uDeviceHandle_t devHandle, void *pUserContext)
+{
+    if (devHandle != NULL) {
+        U_DEVICE_INSTANCE(devHandle)->pUserContext = pUserContext;
+    }
+}
+
+/** Get device attached user context.
+ *
+ * @return User context that was set using @ref uDeviceSetUserContext.
+ */
+void *pUDeviceGetUserContext(uDeviceHandle_t devHandle)
+{
+    if (devHandle == NULL) {
+        return NULL;
+    } else {
+        return U_DEVICE_INSTANCE(devHandle)->pUserContext;
+    }
 }
 
 // End of file

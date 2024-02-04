@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -47,6 +47,8 @@
 #include "u_port_debug.h"
 #include "u_port_os.h"
 #include "u_port_uart.h"
+
+#include "u_test_util_resource_check.h"
 
 #include "u_at_client.h"
 
@@ -103,6 +105,8 @@ U_PORT_TEST_FUNCTION("[cell]", "cellInitialisation")
     uCellDeinit();
     uAtClientDeinit();
     uPortDeinit();
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 #if (U_CFG_TEST_UART_A >= 0)
@@ -110,25 +114,37 @@ U_PORT_TEST_FUNCTION("[cell]", "cellInitialisation")
  */
 U_PORT_TEST_FUNCTION("[cell]", "cellAdd")
 {
+    uAtClientStreamHandle_t stream;
     uAtClientHandle_t atClientHandleA;
     uDeviceHandle_t devHandleA;
 # if (U_CFG_TEST_UART_B >= 0)
     uAtClientHandle_t atClientHandleB;
     uDeviceHandle_t devHandleB;
+    int32_t y;
 # endif
     uDeviceHandle_t dummyHandle;
     uAtClientHandle_t atClientHandle = NULL;
-    int32_t heapUsed;
+    int32_t resourceCount;
     int32_t errorCode;
+    int32_t x;
+    int32_t a[4];
+    int32_t b[4];
+    int32_t c[4];
+    int32_t d[4];
 
     // Whatever called us likely initialised the
     // port so deinitialise it here to obtain the
     // correct initial heap size
     uPortDeinit();
-    heapUsed = uPortGetHeapFree();
+
+    // Obtain the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     U_PORT_TEST_ASSERT(uPortInit() == 0);
 
+#ifdef U_CFG_TEST_UART_PREFIX
+    U_PORT_TEST_ASSERT(uPortUartPrefix(U_PORT_STRINGIFY_QUOTED(U_CFG_TEST_UART_PREFIX)) == 0);
+#endif
     gUartAHandle = uPortUartOpen(U_CFG_TEST_UART_A,
                                  U_CFG_TEST_BAUD_RATE,
                                  NULL,
@@ -144,8 +160,9 @@ U_PORT_TEST_FUNCTION("[cell]", "cellAdd")
     U_PORT_TEST_ASSERT(uCellInit() == 0);
 
     U_TEST_PRINT_LINE("adding an AT client on UART %d...", U_CFG_TEST_UART_A);
-    atClientHandleA = uAtClientAdd(gUartAHandle, U_AT_CLIENT_STREAM_TYPE_UART,
-                                   NULL, U_CELL_AT_BUFFER_LENGTH_BYTES);
+    stream.handle.int32 = gUartAHandle;
+    stream.type = U_AT_CLIENT_STREAM_TYPE_UART;
+    atClientHandleA = uAtClientAddExt(&stream, NULL, U_CELL_AT_BUFFER_LENGTH_BYTES);
     U_PORT_TEST_ASSERT(atClientHandleA != NULL);
 
     U_TEST_PRINT_LINE("adding a cellular instance on that AT client...");
@@ -156,12 +173,62 @@ U_PORT_TEST_FUNCTION("[cell]", "cellAdd")
                                               &atClientHandle) == 0);
     U_PORT_TEST_ASSERT(atClientHandle == atClientHandleA);
 
+    // Check that we can get and set the inter-AT command delay
+    // of this cellular instance
+    x = uCellAtCommandDelayGet(devHandleA);
+    U_TEST_PRINT_LINE("inter AT-command delay is %d ms.", x);
+    U_PORT_TEST_ASSERT(x >= 0);
+    x++;
+    errorCode = uCellAtCommandDelaySet(devHandleA, x);
+    U_PORT_TEST_ASSERT(errorCode == (int32_t) U_ERROR_COMMON_SUCCESS);
+    errorCode = uCellAtCommandDelayGet(devHandleA);
+    U_TEST_PRINT_LINE("inter AT-command delay is now %d ms.", errorCode);
+    U_PORT_TEST_ASSERT(errorCode == x);
+    x--;
+    U_PORT_TEST_ASSERT(uCellAtCommandDelaySet(devHandleA, x) == 0);
+
+    // Check that we can get and set all of the AT timings
+    // of this cellular instance
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingGet(devHandleA, NULL, NULL, NULL, NULL) == 0);
+    a[0] = -1;
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingGet(devHandleA, &(a[0]), NULL, NULL, NULL) == 0);
+    U_PORT_TEST_ASSERT(a[0] > 0);
+    b[0] = -1;
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingGet(devHandleA, NULL, &(b[0]), NULL, NULL) == 0);
+    U_PORT_TEST_ASSERT(b[0] > 0);
+    c[0] = -1;
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingGet(devHandleA, NULL, NULL, &(c[0]), NULL) == 0);
+    U_PORT_TEST_ASSERT(c[0] > 0);
+    d[0] = -1;
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingGet(devHandleA, NULL, NULL, NULL, &(d[0])) == 0);
+    U_PORT_TEST_ASSERT(d[0] > 0);
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingSet(devHandleA, -1, -1, -1, -1) == 0);
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingGet(devHandleA, &(a[1]), &(b[1]), &(c[1]), &(d[1])) == 0);
+    U_PORT_TEST_ASSERT(a[1] == a[0]);
+    U_PORT_TEST_ASSERT(b[1] == b[0]);
+    U_PORT_TEST_ASSERT(c[1] == c[0]);
+    U_PORT_TEST_ASSERT(d[1] == d[0]);
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingSet(devHandleA, a[0] + 1, b[0] + 1, c[0] + 1,
+                                               d[0] + 1) == 0);
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingGet(devHandleA, &(a[1]), &(b[1]), &(c[1]), &(d[1])) == 0);
+    U_PORT_TEST_ASSERT(a[1] == a[0] + 1);
+    U_PORT_TEST_ASSERT(b[1] == b[0] + 1);
+    U_PORT_TEST_ASSERT(c[1] == c[0] + 1);
+    U_PORT_TEST_ASSERT(d[1] == d[0] + 1);
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingSetDefault(devHandleA) == 0);
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingGet(devHandleA, &(a[1]), &(b[1]), &(c[1]), &(d[1])) == 0);
+    U_PORT_TEST_ASSERT(a[1] == a[0]);
+    U_PORT_TEST_ASSERT(b[1] == b[0]);
+    U_PORT_TEST_ASSERT(c[1] == c[0]);
+    U_PORT_TEST_ASSERT(d[1] == d[0]);
+
     U_TEST_PRINT_LINE("adding another instance on the same AT client, should fail...");
     U_PORT_TEST_ASSERT(uCellAdd(U_CELL_MODULE_TYPE_SARA_U201, atClientHandleA,
                                 -1, -1, -1, false, &dummyHandle) < 0);
 
 # if (U_CFG_TEST_UART_B >= 0)
     // If we have a second UART port, add a second cellular API on it
+    // and do it the old way for now
     gUartBHandle = uPortUartOpen(U_CFG_TEST_UART_B,
                                  U_CFG_TEST_BAUD_RATE,
                                  NULL,
@@ -190,6 +257,49 @@ U_PORT_TEST_FUNCTION("[cell]", "cellAdd")
                       " should fail...");
     U_PORT_TEST_ASSERT(uCellAdd(U_CELL_MODULE_TYPE_SARA_R5, atClientHandleB,
                                 -1, -1, -1, false, &dummyHandle) < 0);
+
+    // Check that we can get and set the inter-AT command delay
+    // of this cellular instance without affecting the other
+    y = uCellAtCommandDelayGet(devHandleA);
+    U_PORT_TEST_ASSERT(y >= 0);
+    x = uCellAtCommandDelayGet(devHandleB);
+    U_TEST_PRINT_LINE("inter AT-command delay is %d ms.", x);
+    U_PORT_TEST_ASSERT(x >= 0);
+    x++;
+    errorCode = uCellAtCommandDelaySet(devHandleB, x);
+    U_PORT_TEST_ASSERT(errorCode == (int32_t) U_ERROR_COMMON_SUCCESS);
+    errorCode = uCellAtCommandDelayGet(devHandleB);
+    U_TEST_PRINT_LINE("inter AT-command delay is now %d ms.", errorCode);
+    U_PORT_TEST_ASSERT(errorCode == x);
+    errorCode = uCellAtCommandDelayGet(devHandleA);
+    U_PORT_TEST_ASSERT(errorCode == y);
+    x--;
+    U_PORT_TEST_ASSERT(uCellAtCommandDelaySet(devHandleB, x) == 0);
+
+    // Check that we can get and set all of the AT timings
+    // of this cellular instance without affecting the other
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingGet(devHandleA, &(a[0]), &(b[0]), &(c[0]), &(d[0])) == 0);
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingGet(devHandleB, &(a[1]), &(b[1]), &(c[1]), &(d[1])) == 0);
+    a[1]++;
+    b[1]++;
+    c[1]++;
+    d[1]++;
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingSet(devHandleB, a[1], b[1], c[1], d[1]) == 0);
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingGet(devHandleB, &(a[2]), &(b[2]), &(c[2]), &(d[2])) == 0);
+    U_PORT_TEST_ASSERT(a[2] == a[1]);
+    U_PORT_TEST_ASSERT(b[2] == b[1]);
+    U_PORT_TEST_ASSERT(c[2] == c[1]);
+    U_PORT_TEST_ASSERT(d[2] == d[1]);
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingGet(devHandleA, &(a[3]), &(b[3]), &(c[3]), &(d[3])) == 0);
+    U_PORT_TEST_ASSERT(a[3] == a[0]);
+    U_PORT_TEST_ASSERT(b[3] == b[0]);
+    U_PORT_TEST_ASSERT(c[3] == c[0]);
+    U_PORT_TEST_ASSERT(d[3] == d[0]);
+    a[1]--;
+    b[1]--;
+    c[1]--;
+    d[1]--;
+    U_PORT_TEST_ASSERT(uCellAtCommandTimingSet(devHandleB, a[1], b[1], c[1], d[1]) == 0);
 
     // Don't remove this one, let uCellDeinit() do it
 # endif
@@ -225,20 +335,11 @@ U_PORT_TEST_FUNCTION("[cell]", "cellAdd")
 
     uPortDeinit();
 
-#ifndef __XTENSA__
-    // Check for memory leaks
-    // TODO: this if'ed out for ESP32 (xtensa compiler) at
-    // the moment as there is an issue with ESP32 hanging
-    // on to memory in the UART drivers that can't easily be
-    // accounted for.
-    heapUsed -= uPortGetHeapFree();
-    U_TEST_PRINT_LINE("we have leaked %d byte(s).", heapUsed);
-    // heapUsed < 0 for the Zephyr case where the heap can look
-    // like it increases (negative leak)
-    U_PORT_TEST_ASSERT(heapUsed <= 0);
-#else
-    (void) heapUsed;
-#endif
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 #endif
 
@@ -248,8 +349,6 @@ U_PORT_TEST_FUNCTION("[cell]", "cellAdd")
  */
 U_PORT_TEST_FUNCTION("[cell]", "cellCleanUp")
 {
-    int32_t x;
-
     uCellDeinit();
     uAtClientDeinit();
     if (gUartAHandle >= 0) {
@@ -258,22 +357,9 @@ U_PORT_TEST_FUNCTION("[cell]", "cellCleanUp")
     if (gUartBHandle >= 0) {
         uPortUartClose(gUartBHandle);
     }
-
-    x = uPortTaskStackMinFree(NULL);
-    if (x != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d byte(s)"
-                          " free at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-    x = uPortGetHeapMinFree();
-    if (x >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free"
-                          " at the end of these tests.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 // End of file

@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,13 +36,22 @@
 #include "u_port_debug.h"
 #include "u_port.h"
 #include "u_port_os.h"
+#include "u_port_heap.h"
 #include "u_port_gpio.h"
 #include "u_port_uart.h"
 #include "u_port_event_queue_private.h"
+#include "u_port_ppp_private.h"
 #include "u_port_private.h"
 
-#include "kernel.h"
+#include <version.h>
+
+#if KERNEL_VERSION_NUMBER >= ZEPHYR_VERSION(3,1,0)
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#else
+#include <kernel.h>
 #include <device.h>
+#endif
 
 /* ----------------------------------------------------------------
  * COMPILE-TIME MACROS
@@ -94,12 +103,18 @@ int32_t uPortInit()
 
     // Workaround for Zephyr thread resource pool bug
     uPortOsPrivateInit();
-    errorCode = uPortEventQueuePrivateInit();
+    errorCode = uPortHeapMonitorInit(NULL, NULL, NULL);
+    if (errorCode == 0) {
+        errorCode = uPortEventQueuePrivateInit();
+    }
     if (errorCode == 0) {
         errorCode = uPortUartInit();
     }
     if (errorCode == 0) {
         errorCode = uPortPrivateInit();
+    }
+    if (errorCode == 0) {
+        errorCode = uPortPppPrivateInit();
     }
     return errorCode;
 }
@@ -107,6 +122,7 @@ int32_t uPortInit()
 // Deinitialise the porting layer.
 void uPortDeinit()
 {
+    uPortPppPrivateDeinit();
     uPortPrivateDeinit();
     uPortUartDeinit();
     uPortEventQueuePrivateDeinit();
@@ -143,6 +159,7 @@ int32_t uPortGetHeapFree()
 // Enter a critical section.
 U_INLINE int32_t uPortEnterCritical()
 {
+    // codechecker_suppress [clang-diagnostic-static-in-inline]
     gIrqLockKey = irq_lock();
     return (int32_t) U_ERROR_COMMON_SUCCESS;
 }
@@ -150,6 +167,7 @@ U_INLINE int32_t uPortEnterCritical()
 // Leave a critical section.
 U_INLINE void uPortExitCritical()
 {
+    // codechecker_suppress [clang-diagnostic-static-in-inline]
     irq_unlock(gIrqLockKey);
 }
 
@@ -178,9 +196,14 @@ int32_t uPortGetTimezoneOffsetSeconds()
     return offset;
 }
 
+#if KERNEL_VERSION_NUMBER >= ZEPHYR_VERSION(3,4,0)
+static int ubxlib_preinit(void)
+{
+#else
 static int ubxlib_preinit(const struct device *arg)
 {
     ARG_UNUSED(arg);
+#endif
 
     k_thread_system_pool_assign(k_current_get());
     return 0;

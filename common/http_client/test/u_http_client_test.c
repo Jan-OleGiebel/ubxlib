@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -50,13 +50,18 @@
 
 #include "u_error_common.h"
 
+#include "u_short_range.h" // For uShortRangeAtClientHandleGet() and uShortRangeGetUartHandle()
+
 #include "u_port_clib_platform_specific.h" /* Integer stdio, must be included
                                               before the other port files if
                                               any print or scan function is used. */
 #include "u_port.h"
+#include "u_port_os.h"
 #include "u_port_heap.h"
 #include "u_port_debug.h"
-#include "u_port_os.h"
+#include "u_port_uart.h"  // For uPortUartIsRtsFlowControlEnabled()
+
+#include "u_test_util_resource_check.h"
 
 #include "u_network.h"
 #include "u_network_test_shared_cfg.h"
@@ -67,6 +72,17 @@
 
 #include "u_http_client.h"
 #include "u_device_shared.h"
+
+// For uCellPwrReboot() and MUX
+#include "u_at_client.h"
+#include "u_cell_module_type.h"
+#include "u_cell.h"
+#include "u_cell_file.h"
+#include "u_cell_net.h"
+#include "u_cell_pwr.h"
+#ifdef U_CELL_TEST_MUX_ALWAYS
+#include "u_cell_mux.h"
+#endif
 
 /* ----------------------------------------------------------------
  * COMPILE-TIME MACROS
@@ -94,15 +110,11 @@
  */
 # ifndef U_CFG_TEST_USING_NRF5SDK
 #  define U_HTTP_CLIENT_TEST_DATA_SIZE_BYTES (1024 * 5)
+# define U_HTTP_CLIENT_TEST_DATA_SHORT_RANGE_SIZE_BYTES 2000
 # else
 #  define U_HTTP_CLIENT_TEST_DATA_SIZE_BYTES 512 // NRF52, which we use NRF5SDK on, doesn't have enough heap for large datasize
+#  define U_HTTP_CLIENT_TEST_DATA_SHORT_RANGE_SIZE_BYTES 512
 # endif
-#endif
-
-#ifndef U_HTTP_CLIENT_TEST_DATA_SHORT_RANGE_SIZE_BYTES
-/** The amount of data in HTTP commands for shortrange
- */
-# define U_HTTP_CLIENT_TEST_DATA_SHORT_RANGE_SIZE_BYTES 512
 #endif
 
 #ifndef U_HTTP_CLIENT_TEST_CONTENT_TYPE
@@ -138,6 +150,14 @@
  */
 # define HTTP_CLIENT_TEST_MAX_TRIES_ON_BUSY (U_HTTP_CLIENT_RESPONSE_WAIT_SECONDS + \
                                               U_HTTP_CLIENT_TEST_RESPONSE_TIMEOUT_EXTRA_SECONDS)
+#endif
+
+#ifndef HTTP_CLIENT_TEST_MAX_TRIES_FLOW_CONTROL
+/** How many times to try a PUT/POST operation if the response
+ * appears to be truncated and this may be because RTS flow
+ * control is note wired to the module.
+ */
+# define HTTP_CLIENT_TEST_MAX_TRIES_FLOW_CONTROL 3
 #endif
 
 #ifndef HTTP_CLIENT_TEST_MAX_TRIES_UNKNOWN
@@ -223,6 +243,25 @@ static void printBuffer(const char *pBuffer, size_t length)
     }
 }
 
+// Callback in case we lose the network.
+static void networkStatusCallback(uDeviceHandle_t devHandle,
+                                  uNetworkType_t netType,
+                                  bool isUp,
+                                  uNetworkStatus_t *pStatus,
+                                  void *pParameter)
+{
+    uNetworkTestList_t *pNetworkTestList = (uNetworkTestList_t *) pParameter;
+
+    (void) devHandle;
+    (void) netType;
+    (void) pStatus;
+
+    if ((pNetworkTestList != NULL) && !pNetworkTestList->lossOfConnection && !isUp) {
+        // Just flag a loss so that the main body of the test can retry
+        pNetworkTestList->lossOfConnection = true;
+    }
+}
+
 // Do this before every test to ensure there is a usable network.
 static uNetworkTestList_t *pStdPreamble()
 {
@@ -244,6 +283,11 @@ static uNetworkTestList_t *pStdPreamble()
                               gpUNetworkTestDeviceTypeName[pTmp->pDeviceCfg->deviceType],
                               gpUNetworkTestTypeName[pTmp->networkType]);
             U_PORT_TEST_ASSERT(uDeviceOpen(pTmp->pDeviceCfg, pTmp->pDevHandle) == 0);
+#ifdef U_CELL_TEST_MUX_ALWAYS
+            if (pTmp->pDeviceCfg->deviceType == U_DEVICE_TYPE_CELL) {
+                U_PORT_TEST_ASSERT(uCellMuxEnable(*pTmp->pDevHandle) == 0);
+            }
+#endif
         }
     }
 
@@ -254,6 +298,10 @@ static uNetworkTestList_t *pStdPreamble()
         U_PORT_TEST_ASSERT(uNetworkInterfaceUp(*pTmp->pDevHandle,
                                                pTmp->networkType,
                                                pTmp->pNetworkCfg) == 0);
+        // Some modules can, occasionally, lose service, briefly,
+        // during the test; capture this so that the test can recover
+        U_PORT_TEST_ASSERT(uNetworkSetStatusCallback(*pTmp->pDevHandle, pTmp->networkType,
+                                                     networkStatusCallback, pTmp) == 0);
     }
 
     // It is possible for HTTP client closure in an
@@ -349,7 +397,7 @@ static int32_t checkResponse(uHttpClientTestOperation_t operation,
                              size_t responseSizeBlocking,
                              const char *pContentTypeBuffer,
                              volatile uHttpClientTestCallback_t *pCallbackData,
-                             bool checkBinary)
+                             bool checkBinary, bool rtsFlowControlEnabled)
 {
     int32_t outcome = (int32_t) U_ERROR_COMMON_SUCCESS;
     int32_t startTimeMs;
@@ -364,121 +412,154 @@ static int32_t checkResponse(uHttpClientTestOperation_t operation,
         if (operation == U_HTTP_CLIENT_TEST_OPERATION_GET_DELETED) {
             expectedStatusCode = 404;
         }
-        if (pConnection->pResponseCallback != NULL) {
-            // For the non-blocking case, should have an initial
-            // error code of zero
-            if (errorOrStatusCode == 0) {
-                startTimeMs = uPortGetTickTimeMs();
-                // Wait for twice as long as the timeout as a guard
-                U_TEST_PRINT_LINE("waiting for asynchronous response for up to"
-                                  " %d second(s)...", (pConnection->timeoutSeconds * 2) +
-                                  U_HTTP_CLIENT_TEST_RESPONSE_TIMEOUT_EXTRA_SECONDS);
-                while (!pCallbackData->called &&
-                       (uPortGetTickTimeMs() - startTimeMs < ((pConnection->timeoutSeconds * 2) +
-                                                              U_HTTP_CLIENT_TEST_RESPONSE_TIMEOUT_EXTRA_SECONDS) * 1000)) {
-                    uPortTaskBlock(100);
-                }
+        if ((errorOrStatusCode == (int32_t) U_ERROR_COMMON_TRUNCATED) &&
+            ((operation == U_HTTP_CLIENT_TEST_OPERATION_PUT) ||
+             (operation == U_HTTP_CLIENT_TEST_OPERATION_POST)) &&
+            !rtsFlowControlEnabled) {
+            // In the cellular case, it is possible that a PUT/POST request
+            // failed at the file-write stage if flow control is not connected,
+            // in which case we should retry the PUT/POST request
+            U_TEST_PRINT_LINE("U_ERROR_COMMON_TRUNCATED returned by a PUT/POST"
+                              " request and RTS flow control is not enabled.\n");
+            // Return U_ERROR_COMMON_BAD_DATA, which we can use to trigger a
+            // retry of the PUT/POST operation
+            outcome = (int32_t) U_ERROR_COMMON_BAD_DATA;
+        } else {
+            if (pConnection->pResponseCallback != NULL) {
+                // For the non-blocking case, should have an initial
+                // error code of zero
+                if (errorOrStatusCode == 0) {
+                    startTimeMs = uPortGetTickTimeMs();
+                    // Wait for twice as long as the timeout as a guard
+                    U_TEST_PRINT_LINE("waiting for asynchronous response for up to"
+                                      " %d second(s)...", (pConnection->timeoutSeconds * 2) +
+                                      U_HTTP_CLIENT_TEST_RESPONSE_TIMEOUT_EXTRA_SECONDS);
+                    while (!pCallbackData->called &&
+                           (uPortGetTickTimeMs() - startTimeMs < ((pConnection->timeoutSeconds * 2) +
+                                                                  U_HTTP_CLIENT_TEST_RESPONSE_TIMEOUT_EXTRA_SECONDS) * 1000)) {
+                        uPortTaskBlock(100);
+                    }
 
-                if (pCallbackData->called) {
-                    responseSize = pCallbackData->responseSize;
-                    U_TEST_PRINT_LINE("response received in %d ms.\n",
-                                      uPortGetTickTimeMs() - startTimeMs);
-                    if (pCallbackData->statusCodeOrError != expectedStatusCode) {
-                        U_TEST_PRINT_LINE("expected status code %d, got %d.\n",
-                                          expectedStatusCode, pCallbackData->statusCodeOrError);
-                        if (pCallbackData->statusCodeOrError < 0) {
-                            // If the module reported an error, pass it back
-                            // so that we may retry
-                            outcome = pCallbackData->statusCodeOrError;
-                        } else {
-                            outcome = (int32_t) U_ERROR_COMMON_DEVICE_ERROR;
+                    if (pCallbackData->called) {
+                        responseSize = pCallbackData->responseSize;
+                        U_TEST_PRINT_LINE("response received in %d ms.\n",
+                                          uPortGetTickTimeMs() - startTimeMs);
+                        if (pCallbackData->statusCodeOrError != expectedStatusCode) {
+                            U_TEST_PRINT_LINE("expected status code %d, got %d.\n",
+                                              expectedStatusCode, pCallbackData->statusCodeOrError);
+                            if (pCallbackData->statusCodeOrError < 0) {
+                                // If the module reported an error, pass it back
+                                // so that we may retry
+                                outcome = pCallbackData->statusCodeOrError;
+                            } else {
+                                outcome = (int32_t) U_ERROR_COMMON_DEVICE_ERROR;
+                            }
                         }
+                    } else {
+                        U_TEST_PRINT_LINE("callback not called after %d second(s).\n",
+                                          (uPortGetTickTimeMs() - startTimeMs) / 1000);
+                        outcome = (int32_t) U_ERROR_COMMON_TIMEOUT;
                     }
                 } else {
-                    U_TEST_PRINT_LINE("callback not called after %d second(s).\n",
-                                      (uPortGetTickTimeMs() - startTimeMs) / 1000);
-                    outcome = (int32_t) U_ERROR_COMMON_TIMEOUT;
+                    if (pConnection->errorOnBusy && (errorOrStatusCode == (int32_t) U_ERROR_COMMON_BUSY)) {
+                        U_TEST_PRINT_LINE("non-blocking case with error-on-busy, gotta try again...\n");
+                        outcome = (int32_t) U_ERROR_COMMON_BUSY;
+                        uPortTaskBlock(1000);
+                    } else {
+                        U_TEST_PRINT_LINE("non-blocking case, error-on-busy %s, expected"
+                                          " uHttpClientXxxRequest() to return 0 but got %d.\n",
+                                          pConnection->errorOnBusy ? "ON" : "off", errorOrStatusCode);
+                        outcome = (int32_t) U_ERROR_COMMON_DEVICE_ERROR;
+                    }
                 }
             } else {
-                if (pConnection->errorOnBusy && (errorOrStatusCode == (int32_t) U_ERROR_COMMON_BUSY)) {
-                    U_TEST_PRINT_LINE("non-blocking case with error-on-busy, gotta try again...\n");
-                    outcome = (int32_t) U_ERROR_COMMON_BUSY;
-                    uPortTaskBlock(1000);
-                } else {
-                    U_TEST_PRINT_LINE("non-blocking case, error-on-busy %s, expected"
-                                      " uHttpClientXxxRequest() to return 0 but got %d.\n",
-                                      pConnection->errorOnBusy ? "ON" : "off", errorOrStatusCode);
-                    outcome = (int32_t) U_ERROR_COMMON_DEVICE_ERROR;
-                }
-            }
-        } else {
-            // For the blocking case, errorOrStatusCode should be expectedStatusCode
-            if (errorOrStatusCode != expectedStatusCode) {
-                U_TEST_PRINT_LINE("expected status code %d, got %d.\n",
-                                  expectedStatusCode, errorOrStatusCode);
-                if (errorOrStatusCode < 0) {
-                    // If the module reported an error, pass it back
-                    // so that we may retry
-                    outcome = errorOrStatusCode;
-                } else {
-                    outcome = (int32_t) U_ERROR_COMMON_DEVICE_ERROR;
+                // For the blocking case, errorOrStatusCode should be expectedStatusCode
+                if (errorOrStatusCode != expectedStatusCode) {
+                    U_TEST_PRINT_LINE("expected status code %d, got %d.\n",
+                                      expectedStatusCode, errorOrStatusCode);
+                    if (errorOrStatusCode < 0) {
+                        // If the module reported an error, pass it back
+                        // so that we may retry
+                        outcome = errorOrStatusCode;
+                    } else {
+                        outcome = (int32_t) U_ERROR_COMMON_DEVICE_ERROR;
+                    }
                 }
             }
         }
         if (outcome == (int32_t) U_ERROR_COMMON_SUCCESS) {
             if (((operation == U_HTTP_CLIENT_TEST_OPERATION_GET_PUT) ||
-                 (operation == U_HTTP_CLIENT_TEST_OPERATION_POST) ||
-                 (operation == U_HTTP_CLIENT_TEST_OPERATION_GET_POST)) &&
-                (expectedResponseSize >= 0)) {
-                if (responseSize != (size_t) expectedResponseSize) {
-                    U_TEST_PRINT_LINE("expected %d byte(s) of body from GET"
-                                      " but got %d byte(s).\n",
-                                      expectedResponseSize, responseSize);
-                    outcome = (int32_t) U_ERROR_COMMON_DEVICE_ERROR;
-                } else {
-                    if (checkBinary) {
-                        x = (int32_t) bufferCheck(pResponse, responseSize);
+                 (operation == U_HTTP_CLIENT_TEST_OPERATION_POST)) &&
+                (responseSize < (size_t) expectedResponseSize) &&
+                !rtsFlowControlEnabled) {
+                // If we are doing a GET or a POST and the data we got back
+                // is less than what we PUT/POSTed and the module is unable
+                // to flow control us off then it is _possible_ that data was
+                // lost between us and the module; this is different to the
+                // case up at the top of this function as it can occur for
+                // Wi-Fi also (where there is no file-write stage). In this
+                // case, return U_ERROR_COMMON_BAD_DATA, which we can use
+                // to trigger a retry of the PUT or POST operation
+                U_TEST_PRINT_LINE("expected %d byte(s) of body from GET"
+                                  " but got %d byte(s) (RTS flow control is"
+                                  " not enabled).\n",
+                                  expectedResponseSize, responseSize);
+                outcome = (int32_t) U_ERROR_COMMON_BAD_DATA;
+            } else {
+                if (((operation == U_HTTP_CLIENT_TEST_OPERATION_GET_PUT) ||
+                     (operation == U_HTTP_CLIENT_TEST_OPERATION_POST) ||
+                     (operation == U_HTTP_CLIENT_TEST_OPERATION_GET_POST)) &&
+                    (expectedResponseSize >= 0)) {
+                    if (responseSize != (size_t) expectedResponseSize) {
+                        U_TEST_PRINT_LINE("expected %d byte(s) of body from GET"
+                                          " but got %d byte(s).\n",
+                                          expectedResponseSize, responseSize);
+                        outcome = (int32_t) U_ERROR_COMMON_DEVICE_ERROR;
                     } else {
-                        x = (int32_t) bufferCheckASCII(pResponse, responseSize);
+                        if (checkBinary) {
+                            x = (int32_t) bufferCheck(pResponse, responseSize);
+                        } else {
+                            x = (int32_t) bufferCheckASCII(pResponse, responseSize);
+                        }
+                        if (x != 0) {
+                            x--; // Since bufferCheck counts from 1
+                            U_TEST_PRINT_LINE("body of GET does not match what was expected"
+                                              " at offset %d:\n", x);
+                            pTmp = pResponse + x - 40;
+                            y = 40;
+                            if (pTmp < pResponse) {
+                                pTmp = pResponse;
+                                y = 0;
+                            }
+                            z = 80;
+                            if (z > ((int32_t) responseSize) - (pResponse - pTmp)) {
+                                z = ((int32_t) responseSize) - (pResponse - pTmp);
+                            }
+                            printBuffer(pTmp, z);
+                            uPortLog("\n%.*s%s\n", y, "                                        ", "^");
+                            outcome = (int32_t) U_ERROR_COMMON_DEVICE_ERROR;
+                        }
+                        U_TEST_PRINT_LINE("%d byte(s), all good, content-type \"%s\".\n",
+                                          responseSize, pContentTypeBuffer);
+                        x = strlen(pContentTypeBuffer);
+                        if (x < U_HTTP_CLIENT_TEST_CONTENT_TYPE_MIN_LENGTH_BYTES) {
+                            U_TEST_PRINT_LINE("expected at least %d byte(s) of content type"
+                                              " string but only got %d.",
+                                              U_HTTP_CLIENT_TEST_CONTENT_TYPE_MIN_LENGTH_BYTES, x);
+                            outcome = (int32_t) U_ERROR_COMMON_DEVICE_ERROR;
+                        }
                     }
-                    if (x != 0) {
-                        x--; // Since bufferCheck counts from 1
-                        U_TEST_PRINT_LINE("body of GET does not match what was expected"
-                                          " at offset %d:\n", x);
-                        pTmp = pResponse + x - 40;
-                        y = 40;
-                        if (pTmp < pResponse) {
-                            pTmp = pResponse;
-                            y = 0;
-                        }
-                        z = 80;
-                        if (z > ((int32_t) responseSize) - (pResponse - pTmp)) {
-                            z = ((int32_t) responseSize) - (pResponse - pTmp);
-                        }
-                        printBuffer(pTmp, z);
-                        uPortLog("\n%.*s%s\n", y, "                                        ", "^");
+                } else if (operation == U_HTTP_CLIENT_TEST_OPERATION_HEAD) {
+                    U_TEST_PRINT_LINE("HEAD returned %d byte(s):\n", responseSize);
+                    printBuffer(pResponse, responseSize);
+                    uPortLog("\n");
+                    if (responseSize < U_HTTP_CLIENT_TEST_HEAD_MIN_LENGTH_BYTES) {
+                        U_TEST_PRINT_LINE("expected at least %d byte(s) of headers"
+                                          " but only got %d.",
+                                          U_HTTP_CLIENT_TEST_HEAD_MIN_LENGTH_BYTES,
+                                          responseSize);
                         outcome = (int32_t) U_ERROR_COMMON_DEVICE_ERROR;
                     }
-                    U_TEST_PRINT_LINE("%d byte(s), all good, content-type \"%s\".\n",
-                                      responseSize, pContentTypeBuffer);
-                    x = strlen(pContentTypeBuffer);
-                    if (x < U_HTTP_CLIENT_TEST_CONTENT_TYPE_MIN_LENGTH_BYTES) {
-                        U_TEST_PRINT_LINE("expected at least %d byte(s) of content type"
-                                          " string but only got %d.",
-                                          U_HTTP_CLIENT_TEST_CONTENT_TYPE_MIN_LENGTH_BYTES, x);
-                        outcome = (int32_t) U_ERROR_COMMON_DEVICE_ERROR;
-                    }
-                }
-            } else if (operation == U_HTTP_CLIENT_TEST_OPERATION_HEAD) {
-                U_TEST_PRINT_LINE("HEAD returned %d byte(s):\n", responseSize);
-                printBuffer(pResponse, responseSize);
-                uPortLog("\n");
-                if (responseSize < U_HTTP_CLIENT_TEST_HEAD_MIN_LENGTH_BYTES) {
-                    U_TEST_PRINT_LINE("expected at least %d byte(s) of headers"
-                                      " but only got %d.",
-                                      U_HTTP_CLIENT_TEST_HEAD_MIN_LENGTH_BYTES,
-                                      responseSize);
-                    outcome = (int32_t) U_ERROR_COMMON_DEVICE_ERROR;
                 }
             }
         }
@@ -505,9 +586,7 @@ U_PORT_TEST_FUNCTION("[httpClient]", "httpClient")
     uDeviceHandle_t devHandle;
     uHttpClientConnection_t connection = U_HTTP_CLIENT_CONNECTION_DEFAULT;
     uSecurityTlsSettings_t tlsSettings = U_SECURITY_TLS_SETTINGS_DEFAULT;
-    int32_t heapUsed;
-    int32_t heapHttpInitLoss = 0;
-    int32_t heapXxxSecurityInitLoss = 0;
+    int32_t resourceCount = 0;
     char urlBuffer[64];
     int32_t port = U_HTTP_CLIENT_TEST_SERVER_PORT;
     char serialNumber[U_SECURITY_SERIAL_NUMBER_MAX_LENGTH_BYTES];
@@ -515,16 +594,29 @@ U_PORT_TEST_FUNCTION("[httpClient]", "httpClient")
     size_t uHttpClientTestDataSizeBytes;
     char pathBuffer[32];
     uHttpClientTestCallback_t callbackData = {0};
-    int32_t errorOrStatusCode = 0;
+    int32_t errorOrStatusCode;
+    int32_t requestOperation;
     int32_t outcome;
     size_t busyCount;
     size_t moduleErrorCount;
+    size_t flowControlErrorCount;
     size_t tries;
-    int deviceType;
+    int32_t deviceType;
     bool checkBinary;
+    bool rtsFlowControlEnabled;
+    uAtClientHandle_t atHandle = NULL;
+    uAtClientStreamHandle_t stream;
 
     // In case a previous test failed
     uNetworkTestCleanUp();
+
+    // Whatever called us likely initialised the
+    // port so deinitialise it here to obtain the
+    // correct initial heap size
+    uPortDeinit();
+
+    // Get the initial resource count
+    resourceCount = uTestUtilGetDynamicResourceCount();
 
     // Do the standard preamble
     pList = pStdPreamble();
@@ -542,19 +634,47 @@ U_PORT_TEST_FUNCTION("[httpClient]", "httpClient")
     // Repeat for all bearers that support HTTP/HTTPS
     for (uNetworkTestList_t *pTmp = pList; pTmp != NULL; pTmp = pTmp->pNext) {
         devHandle = *pTmp->pDevHandle;
-        // Get the initial-ish heap
-        heapUsed = uPortGetHeapFree();
 
         // Get a unique number we can use to stop parallel
         // tests colliding at the HTTP server
         U_PORT_TEST_ASSERT(uSecurityGetSerialNumber(devHandle, serialNumber) > 0);
         deviceType = uDeviceGetDeviceType(devHandle);
+
+        // Set the HTTP test data length and determine if flow control towards us is enabled
+        rtsFlowControlEnabled = true;
+        atHandle = NULL;
+        stream.type = U_AT_CLIENT_STREAM_TYPE_NONE;
         if ((deviceType == U_DEVICE_TYPE_SHORT_RANGE_OPEN_CPU) ||
             (deviceType == U_DEVICE_TYPE_SHORT_RANGE)) {
             httpClientMaxNumConn = U_HTTP_SHORT_RANGE_CLIENT_TEST_MAX_NUM;
             uHttpClientTestDataSizeBytes = U_HTTP_CLIENT_TEST_DATA_SHORT_RANGE_SIZE_BYTES;
+#ifdef U_CFG_TEST_SHORT_RANGE_MODULE_TYPE
+            uShortRangeAtClientHandleGet(devHandle, &atHandle);
+#endif
         } else {
             uHttpClientTestDataSizeBytes = U_HTTP_CLIENT_TEST_DATA_SIZE_BYTES;
+            uCellAtClientHandleGet(devHandle, &atHandle);
+        }
+        if (atHandle != NULL) {
+            uAtClientStreamGetExt(atHandle, &stream);
+        }
+        switch (stream.type) {
+            case U_AT_CLIENT_STREAM_TYPE_UART:
+                rtsFlowControlEnabled = uPortUartIsRtsFlowControlEnabled(stream.handle.int32);
+                break;
+            case U_AT_CLIENT_STREAM_TYPE_EDM:
+#ifdef U_CFG_TEST_SHORT_RANGE_MODULE_TYPE
+                // Can't get the UART handle from the AT handle in the EDM case but
+                // can get the UART handle directly
+                rtsFlowControlEnabled = uPortUartIsRtsFlowControlEnabled(uShortRangeGetUartHandle(devHandle));
+#endif
+                break;
+            case U_AT_CLIENT_STREAM_TYPE_VIRTUAL_SERIAL:
+                rtsFlowControlEnabled = stream.handle.pDeviceSerial->isRtsFlowControlEnabled(
+                                            stream.handle.pDeviceSerial);
+                break;
+            default:
+                break;
         }
 
         // Repeat for HTTP and HTTPS
@@ -595,27 +715,9 @@ U_PORT_TEST_FUNCTION("[httpClient]", "httpClient")
                 uPortLog(".\n");
 
                 if (x == 0) {
-                    // Opening an HTTP client for the first time creates a mutex
-                    // that is not destroyed for thread-safety reasons; take
-                    // account of that here
-                    if (y == 0) {
-                        heapHttpInitLoss += uPortGetHeapFree();
-                    }
                     gpHttpContext[y] = pUHttpClientOpen(devHandle, &connection, NULL);
-                    if (y == 0) {
-                        heapHttpInitLoss -= uPortGetHeapFree();
-                    }
                 } else {
-                    // This time account for potential security initialisation loss
-                    // and pass in the security settings (just default, so encryption
-                    // but no server authentication)
-                    if (y == 0) {
-                        heapXxxSecurityInitLoss += uPortGetHeapFree();
-                    }
                     gpHttpContext[y] = pUHttpClientOpen(devHandle, &connection, &tlsSettings);
-                    if (y == 0) {
-                        heapXxxSecurityInitLoss -= uPortGetHeapFree();
-                    }
                 }
                 if (gpHttpContext[y] == NULL) {
                     U_PORT_TEST_ASSERT(uHttpClientOpenResetLastError() == (int32_t) U_ERROR_COMMON_NOT_SUPPORTED);
@@ -625,17 +727,19 @@ U_PORT_TEST_FUNCTION("[httpClient]", "httpClient")
 
                 if (gpHttpContext[y] != NULL) {
                     // Create a path
-                    snprintf(pathBuffer, sizeof(pathBuffer), "/%.16s_%d_%d.html", serialNumber, x, y);
+                    snprintf(pathBuffer, sizeof(pathBuffer), "/%.16s_%d_%d.html", serialNumber,
+                             (int)x, (int)y);
 
                     // For every request operation...
                     busyCount = 0;
                     moduleErrorCount = 0;
-                    for (int32_t requestOperation = 0;
-                         requestOperation < (int32_t) U_HTTP_CLIENT_TEST_OPERATION_MAX_NUM;
-                         requestOperation++) {
+                    requestOperation = 0;
+                    flowControlErrorCount = 0;
+                    while (requestOperation < (int32_t) U_HTTP_CLIENT_TEST_OPERATION_MAX_NUM) {
                         tries = 0;
                         checkBinary = true;
                         do {
+                            errorOrStatusCode = 0;
                             switch (requestOperation) {
                                 case U_HTTP_CLIENT_TEST_OPERATION_PUT:
                                     // Fill the data buffer with data to PUT and PUT it
@@ -737,7 +841,7 @@ U_PORT_TEST_FUNCTION("[httpClient]", "httpClient")
                                                     gpDataBufferIn, uHttpClientTestDataSizeBytes,
                                                     gSizeDataBufferIn, gpContentTypeBuffer,
                                                     (volatile uHttpClientTestCallback_t *) &callbackData,
-                                                    checkBinary);
+                                                    checkBinary, rtsFlowControlEnabled);
                             if ((outcome == (int32_t) U_ERROR_COMMON_UNKNOWN) ||
                                 (outcome == (int32_t) U_ERROR_COMMON_DEVICE_ERROR)) {
                                 // U_ERROR_COMMON_UNKNOWN or U_ERROR_COMMON_DEVICE_ERROR is reported
@@ -752,12 +856,60 @@ U_PORT_TEST_FUNCTION("[httpClient]", "httpClient")
                             tries++;
                             // Give the module a rest betweeen tries
                             uPortTaskBlock(1000);
-                        } while ((outcome < 0) &&
+                            if (outcome == (int32_t) U_ERROR_COMMON_BAD_DATA) {
+                                // We got back less than we sent, or a PUT/POST request
+                                // came back as truncated (cellular only), and this might
+                                // be because outgoing data was lost through lack of flow
+                                // control; retry the PUT or POST operation
+                                if (requestOperation == U_HTTP_CLIENT_TEST_OPERATION_GET_PUT) {
+                                    requestOperation = U_HTTP_CLIENT_TEST_OPERATION_PUT;
+                                }
+                                flowControlErrorCount++;
+                                U_TEST_PRINT_LINE("*** WARNING *** retrying PUT/POST operation.");
+                            } else {
+                                if (pTmp->lossOfConnection ||
+                                    ((outcome == (int32_t) U_ERROR_COMMON_UNKNOWN) ||
+                                     (outcome == (int32_t) U_ERROR_COMMON_DEVICE_ERROR))) {
+                                    // If we lost the connection, or otherwise the device didn't
+                                    // behave, get it back
+                                    U_TEST_PRINT_LINE("device error, recovering.");
+                                    if (deviceType == U_DEVICE_TYPE_CELL) {
+                                        // In the cellular case, experience suggests that
+                                        // a reboot is required to make the module happy again
+                                        uNetworkInterfaceDown(devHandle, pTmp->networkType);
+                                        uCellPwrReboot(devHandle, NULL);
+                                        U_PORT_TEST_ASSERT(uNetworkInterfaceUp(devHandle,
+                                                                               pTmp->networkType,
+                                                                               pTmp->pNetworkCfg) == 0);
+                                        U_PORT_TEST_ASSERT(uNetworkSetStatusCallback(devHandle, pTmp->networkType,
+                                                                                     networkStatusCallback, pTmp) == 0);
+                                    }
+                                    uHttpClientClose(gpHttpContext[y]);
+                                    gpHttpContext[y] = NULL;
+                                    if (x == 0) {
+                                        gpHttpContext[y] = pUHttpClientOpen(devHandle, &connection, NULL);
+                                    } else {
+                                        gpHttpContext[y] = pUHttpClientOpen(devHandle, &connection, &tlsSettings);
+                                    }
+                                    pTmp->lossOfConnection = false;
+                                }
+                            }
+                        } while ((outcome < 0) && (outcome != (int32_t) U_ERROR_COMMON_BAD_DATA) &&
+                                 (flowControlErrorCount < HTTP_CLIENT_TEST_MAX_TRIES_FLOW_CONTROL) &&
                                  (moduleErrorCount < HTTP_CLIENT_TEST_MAX_TRIES_UNKNOWN) &&
                                  (busyCount < HTTP_CLIENT_TEST_MAX_TRIES_ON_BUSY) &&
                                  (tries < HTTP_CLIENT_TEST_OVERALL_TRIES_COUNT));
-                        U_PORT_TEST_ASSERT(outcome == 0);
-                    }  // for (request operation)
+                        if (outcome != (int32_t) U_ERROR_COMMON_BAD_DATA) {
+                            // If the outgoing data was not bad then we can move
+                            // on to the next operation
+                            requestOperation++;
+                            U_PORT_TEST_ASSERT(outcome == 0);
+                        } else {
+                            // If the outgoing data was thought to be bad due to lack
+                            // of flow control, make sure we have enough tries left
+                            U_PORT_TEST_ASSERT(flowControlErrorCount  < HTTP_CLIENT_TEST_MAX_TRIES_FLOW_CONTROL);
+                        }
+                    }  // while (requestOperation < U_HTTP_CLIENT_TEST_OPERATION_MAX_NUM)
                 } else { // if (gpHttpContext[y] != NULL)
                     U_TEST_PRINT_LINE("device does not support HTTP%sclient, not testing it.", x == 0 ? " " : "S ");
                 }
@@ -766,15 +918,9 @@ U_PORT_TEST_FUNCTION("[httpClient]", "httpClient")
             U_TEST_PRINT_LINE("closing HTTP instances...");
             for (size_t y = 0; y < httpClientMaxNumConn; y++) {
                 uHttpClientClose(gpHttpContext[y]);
+                gpHttpContext[y] = NULL;
             }
         } // for (HTTP and HTTPS)
-        // Check for memory leaks
-        heapUsed -= uPortGetHeapFree();
-        U_TEST_PRINT_LINE("%d byte(s) were lost to security initialisation"
-                          " and %d byte(s) to HTTP client initialisation;"
-                          " we have leaked %d byte(s).", heapXxxSecurityInitLoss,
-                          heapHttpInitLoss, heapUsed - (heapXxxSecurityInitLoss + heapHttpInitLoss));
-        U_PORT_TEST_ASSERT(heapUsed <= (heapXxxSecurityInitLoss + heapHttpInitLoss));
     }
 
     // Free memory
@@ -799,6 +945,16 @@ U_PORT_TEST_FUNCTION("[httpClient]", "httpClient")
         }
     }
     uNetworkTestListFree();
+    // Clean-up TLS security mutex; an application wouldn't normally,
+    // do this, we only do it here to make the sums add up
+    uSecurityTlsCleanUp();
+    uDeviceDeinit();
+    uPortDeinit();
+    // Check for resource leaks
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
+    resourceCount = uTestUtilGetDynamicResourceCount() - resourceCount;
+    U_TEST_PRINT_LINE("we have leaked %d resources(s).", resourceCount);
+    U_PORT_TEST_ASSERT(resourceCount <= 0);
 }
 
 /** Clean-up to be run at the end of this round of tests, just
@@ -807,7 +963,11 @@ U_PORT_TEST_FUNCTION("[httpClient]", "httpClient")
  */
 U_PORT_TEST_FUNCTION("[httpClient]", "httpClientCleanUp")
 {
-    int32_t y;
+    U_TEST_PRINT_LINE("cleaning up any outstanding resources.\n");
+
+    for (size_t x = 0; x < sizeof(gpHttpContext) / sizeof(gpHttpContext[0]); x++) {
+        uHttpClientClose(gpHttpContext[x]);
+    }
 
     uPortFree(gpDataBufferOut);
     uPortFree(gpDataBufferIn);
@@ -818,26 +978,13 @@ U_PORT_TEST_FUNCTION("[httpClient]", "httpClientCleanUp")
     // so must reset the handles here in case the
     // tests of one of the other APIs are coming next.
     uNetworkTestCleanUp();
+    // Clean-up TLS security mutex; an application wouldn't normally,
+    // do this, we only do it here to make the sums add up
+    uSecurityTlsCleanUp();
     uDeviceDeinit();
-
-    y = uPortTaskStackMinFree(NULL);
-    if (y != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d"
-                          " byte(s) free at the end of these tests. Should be at least %d.", y,
-                          U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-        U_PORT_TEST_ASSERT(y >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-#ifndef U_CFG_TEST_USING_NRF5SDK
-    y = uPortGetHeapMinFree();
-    if (y >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d byte(s) free"
-                          " at the end of these tests. Should be at least %d.", y, U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-        U_PORT_TEST_ASSERT(y >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
-#endif
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 // End of file

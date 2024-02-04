@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2023 u-blox
+ * Copyright 2019-2024 u-blox
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,12 +51,14 @@
 #include "u_port.h"
 #include "u_port_debug.h"
 #include "u_port_os.h"
+#include "u_port_event_queue.h"
 #if defined(U_CFG_TEST_PIN_GNSS_RESET_N) && (U_CFG_TEST_PIN_GNSS_RESET_N >= 0)
 #include "u_port_gpio.h"
 #endif
 #include "u_port_uart.h"
 #include "u_port_i2c.h"
-#include "u_port_crypto.h"
+
+#include "u_test_util_resource_check.h"
 
 #ifdef U_CFG_TEST_CELL_MODULE_TYPE
 # include "u_cell_module_type.h"
@@ -93,15 +95,6 @@
  * VARIABLES
  * -------------------------------------------------------------- */
 
-/** SHA256 test vector, input, RC4.55 from:
- * https://www.dlitz.net/crypto/shad256-test-vectors/
- */
-static char const gSha256Input[] =
-    "\xde\x18\x89\x41\xa3\x37\x5d\x3a\x8a\x06\x1e\x67\x57\x6e\x92\x6d"
-    "\xc7\x1a\x7f\xa3\xf0\xcc\xeb\x97\x45\x2b\x4d\x32\x27\x96\x5f\x9e"
-    "\xa8\xcc\x75\x07\x6d\x9f\xb9\xc5\x41\x7a\xa5\xcb\x30\xfc\x22\x19"
-    "\x8b\x34\x98\x2d\xbb\x62\x9e";
-
 /* ----------------------------------------------------------------
  * STATIC FUNCTIONS
  * -------------------------------------------------------------- */
@@ -115,7 +108,7 @@ static char const gSha256Input[] =
  * (e.g. UART initialisation, rand(), printf()) allocate
  * memory from the heap when they are first called and never
  * free that memory again.  The heap accounting in our tests
- * will fail due to this loss, even though it is out of our control.
+ * can fail due to this loss, even though it is out of our control.
  * Hence this test is provided and positioned early in
  * the test suite to call those functions and hence move those
  * allocations out of the sums.
@@ -128,7 +121,6 @@ U_PORT_TEST_FUNCTION("[preamble]", "preambleHeapDefence")
 #if (U_CFG_TEST_UART_A >= 0) || (U_CFG_TEST_UART_B >= 0) || (U_CFG_APP_GNSS_I2C >= 0)
     int32_t handle;
 #endif
-    char buffer[64];
     struct tm tmStruct = {0,  0, 0,  1, 0,  70,  0, 0, 0};
 # if defined(U_CFG_TEST_PIN_GNSS_RESET_N) && (U_CFG_TEST_PIN_GNSS_RESET_N >= 0)
     uPortGpioConfig_t gpioConfig = U_PORT_GPIO_CONFIG_DEFAULT;
@@ -161,6 +153,9 @@ U_PORT_TEST_FUNCTION("[preamble]", "preambleHeapDefence")
     mktime(&tmStruct);
 
 #if (U_CFG_TEST_UART_A >= 0)
+# ifdef U_CFG_TEST_UART_PREFIX
+    U_PORT_TEST_ASSERT(uPortUartPrefix(U_PORT_STRINGIFY_QUOTED(U_CFG_TEST_UART_PREFIX)) == 0);
+# endif
     handle = uPortUartOpen(U_CFG_TEST_UART_A, 115200,
                            NULL, U_CFG_TEST_UART_BUFFER_LENGTH_BYTES,
                            U_CFG_TEST_PIN_UART_A_TXD,
@@ -188,12 +183,6 @@ U_PORT_TEST_FUNCTION("[preamble]", "preambleHeapDefence")
     uPortI2cDeinit();
 #endif
 
-    // On some platforms (e.g. ESP-IDF) the crypto libraries
-    // allocate a semaphore when they are first called
-    // which is never deleted.
-    uPortCryptoSha256(gSha256Input, sizeof(gSha256Input) - 1,
-                      buffer);
-
 #if defined(U_CFG_TEST_PIN_GNSS_RESET_N) && (U_CFG_TEST_PIN_GNSS_RESET_N >= 0)
     // If there is a GNSS module attached that has a RESET_N line
     // wired to it then pull that line low to reset the GNSS module,
@@ -213,20 +202,21 @@ U_PORT_TEST_FUNCTION("[preamble]", "preambleHeapDefence")
     uPortTaskBlock(2000);
 #endif
 
+    uPortEventQueueCleanUp();
     uPortDeinit();
 
 #ifdef PRE_ALLOCATE_FILE_COUNT
-    // This is newlib specific workaround
+    // This is a newlib-specific workaround
     // When newlib is built with _REENT_GLOBAL_STDIO_STREAMS *disabled*
     // a global dynamic pool will be used for FILE pointers.
     // The pool re-uses existing FILE pointers but if no FILE is currently
-    // free for use, newlib will allocate a new one. Since our tests checks
-    // heap usage this can result in "false" memory leak failurs.
+    // free for use, newlib will allocate a new one. Some of our tests check
+    // heap usage directly, rather than through the resource counting mechanism,
+    // and so this can result in "false" memory leak failurs.
     // To mitigate this problem we start with allocating a couple of FILE
     // pointers so that that newlib doesn't need to allocate any new ones
     // throughout the complete test suite.
     //
-    // TODO: REMOVE THIS WHEN #275 IS DONE
     static bool files_allocated = false;
     extern FILE *__sfp (struct _reent *);
     if (!files_allocated) {
@@ -255,6 +245,8 @@ U_PORT_TEST_FUNCTION("[preamble]", "preambleHeapDefence")
 U_PORT_TEST_FUNCTION("[preamble]", "preambleCell")
 {
     uCellTestPreamble(U_CFG_TEST_CELL_MODULE_TYPE);
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 #endif // #ifdef U_CFG_TEST_CELL_MODULE_TYPE
 
@@ -264,6 +256,8 @@ U_PORT_TEST_FUNCTION("[preamble]", "preambleCell")
 U_PORT_TEST_FUNCTION("[preamble]", "preambleShortRange")
 {
     uShortRangeTestPreamble(U_CFG_TEST_SHORT_RANGE_MODULE_TYPE);
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 #endif // #ifdef U_CFG_TEST_SHORT_RANGE_MODULE_TYPE
 
@@ -273,23 +267,9 @@ U_PORT_TEST_FUNCTION("[preamble]", "preambleShortRange")
  */
 U_PORT_TEST_FUNCTION("[preamble]", "preambleCleanUp")
 {
-    int32_t x;
-
-    x = uPortTaskStackMinFree(NULL);
-    if (x != (int32_t) U_ERROR_COMMON_NOT_SUPPORTED) {
-        U_TEST_PRINT_LINE("main task stack had a minimum of %d"
-                          " byte(s) free at the end of the preamble.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_OS_MAIN_TASK_MIN_FREE_STACK_BYTES);
-    }
-
     uPortDeinit();
-
-    x = uPortGetHeapMinFree();
-    if (x >= 0) {
-        U_TEST_PRINT_LINE("heap had a minimum of %d"
-                          " byte(s) free at the end of the preamble.", x);
-        U_PORT_TEST_ASSERT(x >= U_CFG_TEST_HEAP_MIN_FREE_BYTES);
-    }
+    // Printed for information: asserting happens in the postamble
+    uTestUtilResourceCheck(U_TEST_PREFIX, NULL, true);
 }
 
 // End of file

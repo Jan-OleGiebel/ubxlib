@@ -12,6 +12,15 @@ function(u_add_source_file feature file)
     message(FATAL_ERROR "File does not exist: ${file}")
   endif()
   if (${feature} IN_LIST UBXLIB_FEATURES)
+    if (short_range_gen2 IN_LIST UBXLIB_FEATURES)
+      # Use second generation file instead if available
+      get_filename_component(DIR ${file} DIRECTORY)
+      get_filename_component(NAME ${file} NAME)
+      set(ALT_FILE ${DIR}/gen2/${NAME})
+      if (EXISTS ${ALT_FILE})
+        set(file ${ALT_FILE})
+      endif()
+    endif()
     list(APPEND UBXLIB_SRC ${file})
     set(UBXLIB_SRC ${UBXLIB_SRC} PARENT_SCOPE)
   endif()
@@ -24,7 +33,9 @@ function(u_add_source_dir feature src_dir)
   endif()
   if (${feature} IN_LIST UBXLIB_FEATURES)
     file(GLOB SRCS ${src_dir}/*.c)
-    list(APPEND UBXLIB_SRC ${SRCS})
+    foreach(src_file IN ITEMS ${SRCS})
+      u_add_source_file(${feature} ${src_file})
+    endforeach()
     set(UBXLIB_SRC ${UBXLIB_SRC} PARENT_SCOPE)
   endif()
 endfunction()
@@ -96,12 +107,15 @@ u_add_module_dir(base ${UBXLIB_BASE}/common/sock)
 u_add_module_dir(base ${UBXLIB_BASE}/common/ubx_protocol)
 u_add_module_dir(base ${UBXLIB_BASE}/common/spartn)
 u_add_module_dir(base ${UBXLIB_BASE}/common/utils)
+u_add_module_dir(base ${UBXLIB_BASE}/common/dns)
+u_add_module_dir(base ${UBXLIB_BASE}/common/geofence)
 u_add_module_dir(base ${UBXLIB_BASE}/port/platform/common/debug_utils)
 
 # Additional source directories
 u_add_source_dir(base ${UBXLIB_BASE}/port/platform/common/event_queue)
 u_add_source_dir(base ${UBXLIB_BASE}/port/platform/common/mutex_debug)
 u_add_source_dir(base ${UBXLIB_BASE}/port/platform/common/log_ram)
+
 
 # Additional include directories
 list(APPEND UBXLIB_INC
@@ -136,11 +150,31 @@ list(APPEND UBXLIB_SRC ${UBXLIB_BASE}/common/device/src/u_device_private_short_r
 list(APPEND UBXLIB_INC ${UBXLIB_BASE}/common/device/api)
 list(APPEND UBXLIB_PRIVATE_INC ${UBXLIB_BASE}/common/device/src)
 
+# CPP file required for geofencing
+# Note: bringing the .c version of this file in if geodesic is not present is not
+# strictly necessary (since the file includes dummy implementations anyway); it
+# is done in order to allow those who don't have C++ support in their toolchain
+# to still compile/use the geofence feature in non-geodesic mode.
+if (geodesic IN_LIST UBXLIB_FEATURES)
+  list(APPEND UBXLIB_SRC ${UBXLIB_BASE}/common/geofence/src/u_geofence_geodesic.cpp)
+else()
+  list(APPEND UBXLIB_SRC ${UBXLIB_BASE}/common/geofence/src/dummy/u_geofence_geodesic.c)
+endif()
+
 # Default malloc()/free() implementation
 list(APPEND UBXLIB_SRC ${UBXLIB_BASE}/port/u_port_heap.c)
 
 # Default uPortGetTimezoneOffsetSeconds() implementation
 list(APPEND UBXLIB_SRC ${UBXLIB_BASE}/port/u_port_timezone.c)
+
+# Default uPortXxxResource implementation
+list(APPEND UBXLIB_SRC ${UBXLIB_BASE}/port/u_port_resource.c)
+
+# Default uPortPppAttach()/uPortPppDetach() implementation
+list(APPEND UBXLIB_SRC ${UBXLIB_BASE}/port/u_port_ppp_default.c)
+
+# Default uPortDeviceXxx implementation
+list(APPEND UBXLIB_SRC ${UBXLIB_BASE}/port/u_port_board_cfg.c)
 
 # Optional features
 
@@ -158,8 +192,10 @@ u_add_source_file(cell ${UBXLIB_BASE}/common/network/src/u_network_private_cell.
 u_add_source_file(cell ${UBXLIB_BASE}/common/device/src/u_device_private_cell.c)
 # gnss
 u_add_module_dir(gnss ${UBXLIB_BASE}/gnss)
+u_add_source_file(gnss ${UBXLIB_BASE}/gnss/src/lib_mga/u_lib_mga.c)
 u_add_source_file(gnss ${UBXLIB_BASE}/common/network/src/u_network_private_gnss.c)
 u_add_source_file(gnss ${UBXLIB_BASE}/common/device/src/u_device_private_gnss.c)
+list(APPEND UBXLIB_PRIVATE_INC ${UBXLIB_BASE}/gnss/src/lib_mga)
 
 # Bring in linker workaround files, needed for ESP-IDF (and no harm for others)
 if (NOT short_range IN_LIST UBXLIB_FEATURES)
@@ -188,16 +224,16 @@ endif()
 # Test related files and directories
 list(APPEND UBXLIB_TEST_INC
   ${UBXLIB_BASE}/common/network/test
+  ${UBXLIB_BASE}/port/platform/common/test_util
 )
+u_add_test_source_dir(base ${UBXLIB_BASE}/port/platform/common/test_util)
 u_add_test_source_dir(base ${UBXLIB_BASE}/port/platform/common/test)
 u_add_test_source_dir(base ${UBXLIB_BASE}/port/test)
 u_add_test_source_dir(base ${UBXLIB_BASE}/common/device/test)
 u_add_test_source_dir(base ${UBXLIB_BASE}/common/network/test)
 # Examples are compiled as tests
 u_add_test_source_dir(base ${UBXLIB_BASE}/example/sockets)
-u_add_test_source_dir(base ${UBXLIB_BASE}/example/security/e2e)
-u_add_test_source_dir(base ${UBXLIB_BASE}/example/security/psk)
-u_add_test_source_dir(base ${UBXLIB_BASE}/example/security/c2c)
+u_add_test_source_dir(base ${UBXLIB_BASE}/example/security)
 u_add_test_source_dir(base ${UBXLIB_BASE}/example/mqtt_client)
 u_add_test_source_dir(base ${UBXLIB_BASE}/example/http_client)
 u_add_test_source_dir(base ${UBXLIB_BASE}/example/location)
@@ -205,3 +241,56 @@ u_add_test_source_dir(base ${UBXLIB_BASE}/example/cell/lte_cfg)
 u_add_test_source_dir(base ${UBXLIB_BASE}/example/cell/power_saving)
 u_add_test_source_dir(base ${UBXLIB_BASE}/example/gnss)
 u_add_test_source_dir(base ${UBXLIB_BASE}/example/utilities/c030_module_fw_update)
+
+# If required, bring in the geodesic library and define
+# U_CFG_GNSS_FENCE_USE_GEODESIC, needed if
+# U_CFG_GEOFENCE is defined and shapes > 1 km
+# in size are employed.
+# NOTE: this works fine on "native" CMake systems,
+# exporting a CMake variable UBXLIB_EXTRA_LIBS which
+# can be included in target_link_libraries() to
+# cause any extra libraries to be linked and
+# UBXLIB_COMPILE_OPTIONS, which can be added to
+# target_compile_definitions(). HOWEVER, it doesn't
+# work for ESP-IDF, which has a "helpful" component
+# system of its own stuck on top, hence BE AWARE
+# THAT that ESP-IDF doesn't use the bit below...
+#
+# ...except that, for reasons I don't understand, the
+# include path for the ESP-IDF geodesic component simply
+# does not propagate to the ubxlib component as it should;
+# to compensate, we always add the path to the
+# GeographicLib header files to UBXLIB_PRIVATE_INC here.
+set(GEODESIC_DIR ${UBXLIB_BASE}/common/geofence/geographiclib)
+set(GEODESIC_INC ${GEODESIC_DIR}/include
+                 ${GEODESIC_DIR}/include/GeographicLib)
+list(APPEND UBXLIB_PRIVATE_INC ${GEODESIC_INC})
+
+if (geodesic IN_LIST UBXLIB_FEATURES)
+  file(GLOB SRCS ${GEODESIC_DIR}/src/*.cpp)
+  set(GEODESIC_SRC ${SRCS})
+  set(GEOGRAPHICLIB_PRECISION 2)
+  configure_file (
+    ${GEODESIC_DIR}/include/GeographicLib/Config.h.in
+    ${GEODESIC_DIR}/include/GeographicLib/Config.h
+    @ONLY)
+  # List rather than set so that options can be passed
+  # into this script
+  list(APPEND UBXLIB_COMPILE_OPTIONS -DGEOGRAPHICLIB_SHARED_LIB=0
+       -DU_CFG_GEOFENCE_USE_GEODESIC)
+  add_library(geodesic STATIC ${GEODESIC_SRC})
+  SET_TARGET_PROPERTIES(geodesic PROPERTIES CXX_STANDARD 11)
+  target_compile_options(geodesic PRIVATE ${UBXLIB_COMPILE_OPTIONS})
+  target_include_directories(geodesic PRIVATE ${GEODESIC_INC})
+  # List rather than set so that static libaries could,
+  # potentially, be passed into this script
+  list(APPEND UBXLIB_EXTRA_LIBS geodesic)
+endif()
+# Shortrange second generation AT module
+if (short_range_gen2 IN_LIST UBXLIB_FEATURES)
+  set(GEN2_AT_DIR ${UBXLIB_BASE}/common/short_range/src/gen2/ucxclient)
+  list(APPEND UBXLIB_INC ${GEN2_AT_DIR}/inc ${GEN2_AT_DIR}/ucx_api)
+  u_add_source_dir(base ${GEN2_AT_DIR}/src)
+  u_add_source_dir(base ${GEN2_AT_DIR}/ucx_api)
+  list(APPEND UBXLIB_COMPILE_OPTIONS -DU_UCONNECT_GEN2 -DU_CX_AT_CONFIG_FILE="../../ucx_config.h")
+endif()

@@ -6,16 +6,16 @@ The complete set up of the automated test system, from scratch, is described in 
 # The Instances
 The automated test system runs several instances all defined in [DATABASE.md](DATABASE.md). Each row in [DATABASE.md](DATABASE.md) corresponds to an instance that runs in parallel on Jenkins. The process for each instance is divided into the stages: build, flash and test. However, some of the instances only use the test stage.
 
-Each instance (i.e. each row in [DATABASE.md](DATABASE.md) or each parallel test) has an ID with format `x.y.z` where x-z are integer values. `x` is mandatory while `y` and `z` are optional. The `x` is used for referring to a specific HW configuration and `y` & `z` are used to for defining variants of tests performed on the same HW config.
+Each instance (i.e. each row in [DATABASE.md](DATABASE.md) or each parallel test) has an ID with format `x.y.z` where x-z are integer values. `x` is mandatory while `y` and `z` are optional. The `x` is used for referring to a specific HW configuration and `y` & `z` are used for defining variants of tests performed on the same HW config.
 
 Example:
-11.0: ESP32-DevKitC HW, build, flash and test `ubxlib` for ESP-IDF
-11.1: ESP32-DevKitC HW (i.e. same HW as above), build, flash and test `ubxlib` for Arduino
 
-i.e. 11 in the above example identifies the HW and `.0` & `.1` are used for testing `ubxlib` built for both ESP-IDF and Arduino on the same HW.
-When running on Jenkins the test system will run these two test instances in sequence if there is only one instance of `11` HW available.
+- 11.0: ESP32-DevKitC HW, build, flash and test `ubxlib` for ESP-IDF
+- 11.1: ESP32-DevKitC HW (i.e. same HW as above), build, flash and test `ubxlib` for Arduino
 
-**NOTE:** it is important to note that the values set for the instances in [DATABASE.md](DATABASE.md) are used as input to the build, flash and test stage.
+11 in the above example identifies the HW and `.0` & `.1` are used for testing `ubxlib` built under ESP-IDF or Arduino on the same HW.  When running on Jenkins the test system will run these two test instances in sequence if there is only one instance of `11` HW available.
+
+The values set for the instances in [DATABASE.md](DATABASE.md) are used as input to the build, flash and test stages.
 
 # Reading The Jenkins Output
 Whenever a push is made to the `ubxlib_priv` repository, Jenkins will be triggered to test it.
@@ -28,7 +28,7 @@ If there is a failure the stage will be marked red, or if there is a timeout it 
 
 ![Test output](/readme_images/test_output.png)
 
-To understand why the test failed you will likely need the debug output from the target. For the `test` stage test outcome together with the debug log from the target are stored in JUnit XML reports parsed by Jenkins. In this way you can use the `Test` tab in BlueOcean to view the failed test to find the debug output in the `Standard Output` section:
+To understand why the test failed you will likely need the debug output from the target. For the `test` stage the test outcome, together with the debug log from the target, are stored in JUnit XML reports parsed by Jenkins; you can use the `Test` tab in BlueOcean to view the failed test, and you will find the debug output in the `Standard Output` section:
 
 ![Test tab](/readme_images/test_tab.png)
 
@@ -108,13 +108,13 @@ inv --help automation.build 12.0
 ```
 
 ### Shell Tab Completion For Invoke Command
-Since the PyInvoke task name are quite long, it can be convenient to enable shell tab completion.
-The `invoke` command is already prepared for this, but you need to do some steps to enable it:
-1. Generate the needed shell script for your shell by using executing `invoke --print-completion-script <name of your shell> > ~/.invoke-completion.sh`.
-I.e. for bash you would run:
+Since the PyInvoke task name are quite long, it can be convenient to enable shell tab completion.  The `invoke` command is already prepared for this, but you need to do some steps to enable it:
+
+1. Generate the needed shell script for your shell by using executing `invoke --print-completion-script <name of your shell> > ~/.invoke-completion.sh` i.e. for bash you would run:
 ```
 invoke --print-completion-script bash > ~/.invoke-completion.sh
 ```
+
 2. You need to source the script generated in step 1 at startup of each shell session. For bash you can do this by adding the following line to `~/.bashrc`:
 ```
 source ~/.invoke-completion.sh
@@ -123,12 +123,13 @@ source ~/.invoke-completion.sh
 ## `automation` Tasks
 The Jenkins pipeline will only use the `automation` PyInvoke tasks. The flow in Jenkins is:
 1. Decide what instances and tests to run by calling `automation.get-test-selection`.
-2. For each instance from step 1 call `automation.build --filter=<test_filter> <instance>` to build the firmware.
+2. For each instance from step 1 call `automation.build --filter=<test_filter> --features=<features> <instance>` to build the firmware.
 3. For each instance from step 1 call `automation.flash <instance>` to flash the firmware.
-4. For each instance from step 1 call `automation.test --filter=<test_filter> <instance>` to start the tests.
+4. For each instance from step 1 call `automation.test <instance>` to start the tests.
+5. For each instance from step 1 call `automation.run --filter=<test_filter> --features=<features> <instance>` to do 2, 3 and then 4.
 
 So if you need to run the test automation locally you can invoke `automation.build`, `automation.flash` and/or `automation.test` with the instance ID as argument.
-As default all tests will be executed, but if you only want to run specific test you can use the `--filter` flag.
+As default all tests will be executed, but if you only want to run specific tests you can use the `--filter` flag when building or running (since the filter is built into the code the build step must be included).  Also by default, the features specified by the environment variable `UBXLIB_FEATURES` (if empty cellular, GNSS and short range) will be built unless something like, for instance, `--features="cell gnss"` is specified.
 
 The `automation` tasks works as an abstract layer to the platform (i.e. `arduino.<command>`, `nrf5.<command>`, ...) tasks. This means that when you call `automation.build 12` the task will check [DATABASE.md](DATABASE.md) to find what platform instance 12 is. In this case it will be `ESP-IDF` so then the `automation.build` task will in turn call `esp-idf.build` to build the firmware.
 
@@ -143,7 +144,7 @@ When you switch version in `u_packages.yml` the package manager will first check
 # CodeChecker
 [CodeChecker](https://github.com/Ericsson/codechecker) is a frame work for static code analysis using [Clang Static Analyzer](https://clang-analyzer.llvm.org/). We currently support running CodeChecker for STM32Cube and nRFConnect platforms.
 
-In `DATABASE.md` the CodeChecker is run by adding `CodeChecker:` prefix to the `Platform` field. All defines and configurations will be regarded exactly like building a firmware for the specific platform.
+In `DATABASE.md` the CodeChecker is run by adding a `CodeChecker:` prefix to the `Platform` field. All defines and configurations will be regarded exactly like building a firmware for the specific platform.
 
 If you are running CodeChecker locally you need to `pip3 install codechecker` and, on Windows, install at least [LLVM version 14](https://github.com/llvm/llvm-project/releases/tag/llvmorg-14.0.0), adding the `bin` directory to your path.
 
@@ -166,12 +167,7 @@ This can only be done by the normal compiler ways. Please see Clang Static Analy
 # Running A Specified Test Instance
 As described in the previous section Jenkins uses the `automation.<command>` PyInvoke tasks. These tasks can be run locally and this is described in the [`automation` Tasks](#automation-tasks) section.
 
-**NOTE:** If you want to use hardware dependent task such as `automation.flash` you will likely need to adjust the files in `$HOME/.ubx_automation`.
-In this directory you will find `settings_v2_agent_specific.json` which among other things contains a list of COM-ports and debugger serial to use for each instance.
-The file will automatically created with default value if it doesn't exist. In this case the settings will use a `_FIX_ME` postfix.
-To get local testing working you will need to adjust the `CONNECTION_INSTANCE_<instance>_FIX_ME` for the instance you want to run.
-When you have configured COM port and/or debugger serial number you should remove the `_FIX_ME` postfix.
-For instance, to run instance 16 locally you might open that file and change:
+**NOTE:** If you want to use a hardware dependent task such as `automation.flash` you will likely need to adjust the files in `$HOME/.ubx_automation`. In this directory you will find `settings_v2_agent_specific.json` which among other things contains a list of COM-ports and debugger serial to use for each instance. The file will automatically created with default value if it doesn't exist. In this case the settings will use a `_FIX_ME` postfix. To get local testing working you will need to adjust the `CONNECTION_INSTANCE_<instance>_FIX_ME` for the instance you want to run. When you have configured COM port and/or debugger serial number you should remove the `_FIX_ME` postfix. For instance, to run instance 16 locally you might open that file and change:
 
 ```
   "CONNECTION_INSTANCE_16_FIX_ME": {
@@ -185,20 +181,29 @@ For instance, to run instance 16 locally you might open that file and change:
 ```
   "CONNECTION_INSTANCE_16": {
     "serial_port": "COM3",
-    "debugger": None
+    "debugger": "none"
   }
 ```
 
-By setting `debugger` to `None`, the script will simply pick the one and only connected board. Should there be multiple boards connected to the PC, one must specify the correct serial number for the debugger.
+By setting `debugger` to `"none"`, the script will simply pick the one and only connected board. Should there be multiple boards connected to the PC, one must specify the correct serial number for the debugger.
 
 # Jenkins Test Selection
 As a first step in the Jenkins pipeline there is a script that decides what instances and tests suites to run. This is handled by the `automation.get-test-selection` PyInvoke task. This task returns a JSON struct with a list of instances to run and a test filter. The input to this script is the last commit message and what files have been modified like (for more details on how to use PyInvoke tasks see [PyInvoke Tasks](#pyinvoke-tasks) section):
 
 `invoke automation.get-test-selection --message="some text" --files="<a list of file paths, unquoted, separated with spaces>"`
 
-The "some text" is intended to be the text of the last commit message.  When `automation.get-test-selection` is called from Jenkins, using [Jenkinsfile](Jenkinsfile), the most recent commit text is grabbed by the [Jenkinsfile](Jenkinsfile) script.  This text is parsed for a line that starts with `test: foo bar`, where `foo` is either `*` or a series of digits separated by spaces or full stops, e.g. `0` `0 1` or `1.1` or `4.0.2 6.1.3` and `bar` is some more optional text, so for example `test: 1 example` or `test: 1 exampleSec`.  `foo` indicates the instance IDs to run from [DATABASE.md](DATABASE.md), separated by spaces, and `bar` is a filter string, indicating that only examples/tests that begin with that string should be run; note that this is the name used in the test definition, the second parameter to `U_PORT_TEST_FUNCTION`, it is not the name of the sub-directory the file is in (e.g. to select tests of the AT client use `atClient` not `at_client`).  For instance `test: 1 2 3 example` would run all things that begin with `example` on instance IDs `1`, `2` and `3`, or `test: * port` would run all things that begin with `port` (i.e. the porting tests) on **all** instances, `test: * exampleSec` would run all things that begin with `exampleSec` (i.e. all of the security examples) or `test: *` would run everything on all instance IDs, etc.  Please make sure you use the **exact** syntax (e.g. don't add commas between the instances or a full stop on the end or quotation marks etc.) as it is strictly applied in order to avoid accidentally picking up lines not intended as test directives.  Alternatively `test: None` can be specified to stop any tests being run e.g. because the change affects the automation code itself and could bring the test system tumbling down, or if the code is a very early version and there is no point in wasting valuable test time.  `bar` can contain multiple filter strings; simply separate them with a full stop `.` (but no spaces), for instance `exampleSec.exampleSocketsTls`; think of the full stop as an "or".
+...where "some text" is the text of the last commit message.  When `automation.get-test-selection` is called from Jenkins, using [Jenkinsfile](Jenkinsfile), the most recent commit text is grabbed by the [Jenkinsfile](Jenkinsfile) script.  This text is parsed for a line of the form `test: foo bar`, where `foo` is an instance filter (e.g. `0` `0 1` or `1.1` or `4.* 6.1.3`) and `bar` is a test filter, e.g. `example` or `exampleGnss.cellInfo` (think of the `.` as "or").  Items may be separated with white-space or a comma.  `None` can be used to mean "run no tests" (useful if you are just archiving your code, you don't want to occupy the test system unduly).  Examples:
+
+- `test: 12` will run all tests on instance 12.
+- `test: 10* 15.0.0` will run all test on all instances that begin with 10 (so 10.0 and 10.1 and 101) and also all tests on instance 15.0.0.
+- `test: 28 gnss` will run all tests that begin with `gnss` on instance 28.
+- `test: 13.0.0, 10.* gnss.cellMqtt` will run all tests that begin with `gnss` and `cellMqtt` on instances 13.0.0 and also the instances that begin with "10." (so 10.0 and 10.1 but not 100).
+- `test: *` will run all tests on all instances.
+- `test: none` will run no tests at all.
 
 So, when submitting a branch the u-blox Jenkins configuration will parse the commit text to find a `test:` line and conduct those tests on the branch, returning the results to Github.
+
+IMPORTANT: filtering will NOT be applied once the branch becomes a Pull Request: Pull Requests always run a full set of tests.
 
 If the commit text does *not* contain a line starting with `test:` (the usual case) then the file list must be provided.  Again, when `automation.get-test-selection` is called from Jenkins, [Jenkinsfile](Jenkinsfile), will determine the likely base branch (`master` or `development`) using [u_get_likely_base_branch.py](./scripts/u_get_likely_base_branch.py), grab the list of changed files between this base and the branch from Github.  `automation.get-test-selection` then calls the [u_select.py](./scripts/u_select.py) script to determine what tests should be run on which instance IDs to verify that the branch is good.  See the comments in [u_select.py](./scripts/u_select.py) to determine how it does this.  It is worth noting that the list of tests/instances selected by [u_select.py](./scripts/u_select.py) will always be the largest one: e.g. if a file in the `ble` directory has been changed then all the instances in [DATABASE.md](DATABASE.md) that have `ble` in their "APIs available" column will be selected.  To narrow the tests/instances that are run further, use the `test:` line in your most recent commit message to specify it yourself.
 
@@ -229,7 +234,7 @@ If the commit text does *not* contain a line starting with `test:` (the usual ca
 
 [scripts/u_run_windows.py](./scripts/u_run_windows.py): build and run on Windows; called by `automation.test` PyInvoke task.
 
-[scripts/u_run_linux.py](./scripts/u_run_linux.py): build and run on Linux; called by `automation.test` PyInvoke task.  In particular, if you install the Linux `socat` utility this script will automatically handle mapping of the `/dev/pts/x` UARTs of the `ubxlib` Linux application to real Linux devices.  For instance, to make `UART_0` the `U_CFG_TEST_UART_A` loop-back UART, used by the porting tests, then simply pass the \#define `U_CFG_TEST_UART_A=0` into the build. Similarly, to make `UART_1` the `U_CFG_TEST_UART_B` loop-back UART (used for the scenario in the AT command and chip-to-chip security tests where `U_CFG_TEST_UART_A` is looped back to `U_CFG_TEST_UART_B`) then you would also pass \#define `U_CFG_TEST_UART_B=1` into the build.  And finally, if you have a real module connected to a real device on Linux, let's say a cellular module on `/dev/tty/5`, and you want to connect it to `ubxlib` as `UART_1`, then as well as passing the \#define `U_CFG_APP_CELL_UART=1` into the build you would also pass `U_CFG_APP_CELL_UART_DEV=/dev/tty/5`.  The \#defines `U_CFG_APP_GNSS_UART` and `U_CFG_APP_SHORT_RANGE_UART` can be used similarly.
+[scripts/u_run_linux.py](./scripts/u_run_linux.py): build and run on Linux; called by `automation.test` PyInvoke task.  In particular, if you install the Linux `socat` utility this script will automatically handle mapping of the `/dev/pts/x` UARTs of the `ubxlib` Linux application to real Linux devices.  For instance, to make `UART_0` the `U_CFG_TEST_UART_A` loop-back UART, used by the porting tests, then simply pass the \#define `U_CFG_TEST_UART_A=0` into the build. Similarly, to make `UART_1` the `U_CFG_TEST_UART_B` loop-back UART (used for the scenario in the AT commandtests where `U_CFG_TEST_UART_A` is looped back to `U_CFG_TEST_UART_B`) then you would also pass \#define `U_CFG_TEST_UART_B=1` into the build.  And finally, if you have a real module connected to a real device on Linux, let's say a cellular module on `/dev/tty/5`, and you want to connect it to `ubxlib` as `UART_1`, then as well as passing the \#define `U_CFG_APP_CELL_UART=1` into the build you would also pass `U_CFG_APP_CELL_UART_DEV=/dev/tty/5`.  The \#defines `U_CFG_APP_GNSS_UART` and `U_CFG_APP_SHORT_RANGE_UART` can be used similarly.
 
 [scripts/u_select.py](./scripts/u_select.py): see above.
 
@@ -239,9 +244,12 @@ If the commit text does *not* contain a line starting with `test:` (the usual ca
 
 [scripts/u_get_arm_toolchain.py](./scripts/u_get_arm_toolchain.py): script used by vscode to get the ARM toolchain path via `u_packages`.
 
+[scripts/u_get_build_dir.py](./scripts/u_get_build_dir.py): script used by vscode to get the default build directory.
+
 # Maintenance
 - If you add a new API make sure that it is listed in the `APIs available` column of at least one row in [DATABASE.md](DATABASE.md), otherwise [u_select.py](./scripts/u_select.py) will **not**  select it for automated-testing of a branch.
 - If you add a new board to the test system, update [u_connection.py](./scripts/u_connection.py) to include it.
 - If you add a new platform or test suite, add it to [DATABASE.md](DATABASE.md) and make sure that the result is parsed correctly by [u_data.py](./scripts/u_data.py) (e.g. by running `automation.<command>` PyInvoke tasks) from the command-line and checking that everything is correct).
 - If you add a new item in the range 0 to 9 (i.e. a checker with no platform), update [automation.py](./tasks/automation.py) to include it.
 - If you add a new directory OFF THE ROOT of `ubxlib`, i.e. something like `ubxlib/blah`, add it to the `ASTYLE_DIRS` variable of the [u_run_astyle.py](./scripts/u_run_astyle.py) script.
+- When the FW version of a cellular module, or GNSS chip, or u-connectExpress version in the test system is updated, update the `README.md` in the corresponding test directory with that version.
